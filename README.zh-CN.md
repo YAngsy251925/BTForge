@@ -8,7 +8,7 @@ BT Forge 把 LLM（或人）写出的 JSON 规格变成真实、可编辑的 UE 
 - **环境查询（EQS）**：Option、原生 generator/test、评分、context、项目类路径。
 - **校验与发现**：带精确 JSON 路径的空跑校验；能力目录让 agent 使用工程里真实存在的类，而不是猜路径。
 
-引擎目标：**UE 5.4 – 5.8**，零版本条件编译。已实测 **5.5**（空白工程）与 **5.8**（Lyra；自研 server 与 Epic 官方 MCP server 双端点）。
+引擎目标：**UE 5.4 – 5.8**，零版本条件编译。已实测 **5.5**（空白工程）与 **5.8**（Lyra；自研 server 与 Epic 官方 MCP server 双端点）。M3 运行层验证（in-process PIE 真跑 + EQS 实例查询 + 机器可读断言）已于 2026-10-29 落地。
 
 > English documentation: [README.md](README.md).
 

@@ -28,3 +28,5 @@ __pycache__/
 Thumbs.db
 .DS_Store
 Desktop.ini
+devlog-internal.md
+btforge-devlog*.md

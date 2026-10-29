@@ -3,6 +3,44 @@
 All notable changes to BT Forge are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.2.0] — 2026-10-29
+
+### Added
+
+- **Runtime verification (M3)**: `start_verify` + `get_verify_result` MCP tools.
+  `start_verify` spawns an in-process PIE session (GameModeOverride and map
+  configurable, `bareGameMode` for project-independent runs), spawns an
+  AIController fixture, starts the tree (`SingleRun` finishes naturally,
+  `Looped` must keep running) or executes the EQS query synchronously
+  (EQSTestingPawn-style), and samples `IsRunning`/active tasks/blackboard over
+  time. `get_verify_result` returns machine-readable
+  `checks[{name,pass,detail}]` (pie_started, running_after_start,
+  expected_active_task_seen, finished_gracefully, finished_in_window,
+  kept_running_for_duration, no_log_errors), a per-0.1s execution timeline,
+  final blackboard values (bt) or item count/scores (eqs), and captured
+  log errors.
+- **`bareGameMode` / `gameModeClassPath` / `mapPath` options** to run
+  project-independent verifications on an engine template map.
+- Results are persisted to `Saved/BTForgeVerify/last_result.json` (PIE teardown
+  disables HTTP listeners globally; file polling keeps the result reachable).
+- `Tools/mcp_m3_smoke.py`: full M3 suite (SingleRun duration-window assertion,
+  Looped keep-running, unknown-key/missing-asset negatives, EQS result
+  assertion) with official-endpoint handshake/name-mapping/unwrapping support.
+
+### Verified
+
+- UE 5.8: built-in endpoint and official endpoint — M3 suite PASS (BT
+  SingleRun/Looped/negatives + EQS itemCount=289 on template map).
+- UE 5.5: M3 source compiles with zero changes; full M3 suite PASS.
+
+### Fixed
+
+- Silent acceptance of misplaced `services`/`decorators` (on tasks/root) now
+  rejected with a location error.
+- `FinishedSession` state is set before `RequestEndPlayMap` and HTTP listeners
+  are re-enabled after PIE teardown (the endpoint previously went dark right
+  when clients polled results).
+
 ## [2.1.0] — 2026-10-29
 
 Initial public release. Editor plugin for Unreal Engine 5.4–5.8, plus a 5.8-only
