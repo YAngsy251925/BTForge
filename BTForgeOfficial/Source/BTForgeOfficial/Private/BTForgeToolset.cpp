@@ -3,6 +3,7 @@
 #include "BTForgeCatalogLibrary.h"
 #include "BTForgeEQSLibrary.h"
 #include "BTForgeLibrary.h"
+#include "BTForgeVerifyLibrary.h"
 
 FString UBTForgeToolset::CreateBehaviorTreeAsset(const FString& AssetPath, const FString& BlackboardJson)
 {
@@ -42,4 +43,14 @@ FString UBTForgeToolset::ValidateEQSSpec(const FString& QueryJson)
 FString UBTForgeToolset::GetCapabilityCatalog(const FString& SectionJson)
 {
 	return UBTForgeCatalogLibrary::GetCapabilityCatalog(SectionJson);
+}
+
+FString UBTForgeToolset::StartVerify(const FString& OptionsJson)
+{
+	return UBTForgeVerifyLibrary::StartVerify(OptionsJson);
+}
+
+FString UBTForgeToolset::GetVerifyResult(const FString& SessionId)
+{
+	return UBTForgeVerifyLibrary::GetVerifyResult(SessionId);
 }

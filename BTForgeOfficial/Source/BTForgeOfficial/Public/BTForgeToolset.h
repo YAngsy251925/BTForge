@@ -127,4 +127,40 @@ public:
 	 */
 	UFUNCTION(meta = (AICallable), Category = "BTForge")
 	static FString GetCapabilityCatalog(const FString& SectionJson);
+
+	/**
+	 * Runtime verification (M3): start an in-process PIE session and actually
+	 * run a generated asset. OptionsJson: {"kind":"bt"|"eqs", "assetPath":"...",
+	 * "mode":"SingleRun"|"Looped", "durationSec":n, "expectedDurationSec":n,
+	 * "toleranceSec":n, "expectedActiveTask":"...", "blackboardInit":{...},
+	 * "fixturePawn":true|false, "mapPath":"...", "bareGameMode":true|false,
+	 * "gameModeClassPath":"...", "queryRunMode":"...", "queryParams":{...}}.
+	 * Starts PIE with GameModeOverride=AGameModeBase (bareGameMode, default true;
+	 * an empty mapPath then defaults to /Engine/Maps/Templates/Template_Default
+	 * because project maps such as Lyra assert on a bare GameMode), spawns an
+	 * AIController + possessed Pawn fixture, starts the tree or runs the EQS
+	 * query synchronously, and samples execution from t=0. Refuses to start while
+	 * a PIE/SIE session is already running.
+	 *
+	 * @param OptionsJson Verification options as a JSON string.
+	 * @return JSON {"ok":true,"sessionId":"V..","status":"pending","mapPath":...}
+	 *         - poll GetVerifyResult until status is done/failed.
+	 */
+	UFUNCTION(meta = (AICallable), Category = "BTForge")
+	static FString StartVerify(const FString& OptionsJson);
+
+	/**
+	 * Poll a runtime verification session started by StartVerify. While
+	 * running returns {"status":"pending"|"running"}; when finished returns
+	 * the full result: a top-level "pass" boolean (the AND of every checks[]
+	 * entry; "status" is "done" only when it is true), checksPassed/checksTotal,
+	 * checks[{name,pass,detail}], samples timeline (from t=0), activeTasksSeen,
+	 * durationSec/frameMaxSec, fixture, blackboardFinal (bt) or
+	 * itemCount(=NumValidItems)/rawItemCount/itemType/topScores (eqs), logErrors.
+	 *
+	 * @param SessionId Session id returned by StartVerify.
+	 * @return JSON result or {"ok":false,"error":msg} for an unknown session.
+	 */
+	UFUNCTION(meta = (AICallable), Category = "BTForge")
+	static FString GetVerifyResult(const FString& SessionId);
 };

@@ -18,6 +18,7 @@ public class BTForgeCore : ModuleRules
 			"AIModule",
 			"AssetRegistry",
 			"AssetTools",
+			"HTTPServer",
 			"Json",
 			"UnrealEd"
 		});

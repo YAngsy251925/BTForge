@@ -3,6 +3,147 @@
 All notable changes to BT Forge are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.2.1] — 2026-10-29
+
+Repository-completeness and review fixes for M3. The `v2.2.0` tag shipped
+documentation changes only; **this** release is the first one that actually
+contains the runtime-verification sources and the M3 smoke suite.
+
+### Added
+
+- M3 sources that were missing from the repository:
+  `BTForgeCore/Private/BTForgeVerifySession.{h,cpp}`,
+  `BTForgeCore/Public/BTForgeVerifyLibrary.h`,
+  `BTForgeCore/Private/BTForgeVerifyLibrary.cpp`, `Tools/mcp_m3_smoke.py`, the
+  plugin `README.md`, and the `StartVerify`/`GetVerifyResult` declarations on
+  `UBTForgeToolset` (official endpoint).
+- `mcp_m3_smoke.py` now asserts the result contract itself: top-level `pass` vs
+  `checks[]` vs `checksPassed/checksTotal` vs `status` (BT **and** EQS),
+  `fixture.pawn`, `mapPath` echo, a `t=0` first sample, typed `blackboardInit`
+  round-trip (Int/Float/Bool/Vector/String), both `Sequence` children observed,
+  and a deliberately failing check (35 checks). It also deletes the previous
+  result file before each start and retries `teardown_pending`.
+- Result fields `checksPassed`, `checksTotal` (both kinds), `frameMaxSec`,
+  `mapPath`, `fixture`, `rawItemCount` (EQS), `queryStatus`/`queryFinished` (EQS).
+- `fixturePawn` option (bt, default `true`): the fixture is now an
+  `AAIController` **plus** a possessed `ADefaultPawn`, so movement and
+  behavior tasks are exercised on a real pawn instead of a pawn-less controller.
+
+### Fixed
+
+- **`pass` was not the AND of `checks[]`**: the BT result derived `pass` from
+  `error`/log errors only, so a failed `running_after_start`,
+  `expected_active_task_seen` or `finished_in_window` still reported
+  `pass:true`; the session state was then sniffed out of the serialized JSON
+  (`ResultJson.Contains("\"pass\":true\")`), which any check's `pass:true`
+  satisfied. `pass` is now computed once from the check list, `status` is
+  derived from that same boolean, and EQS results carry `pass` too.
+- **`PostPIEStarted` boolean was misread**: `FEditorDelegates::PostPIEStarted`
+  passes `bIsSimulatingInEditor` (`PlayLevel.cpp` broadcasts
+  `WorldType == SimulateInEditor`), not a start-failure flag, so every Simulate
+  session reported "PIE failed to start" and a real start failure was only
+  caught by the 90 s deadline. Start failures are now detected by polling
+  `GUnrealEd->IsPlaySessionInProgress()`; the delegate parameter is named and
+  treated accordingly.
+- **EQS result accuracy**: `itemCount` reports `FEnvQueryInstance::NumValidItems`
+  (filtered/discarded entries no longer inflate it) with `rawItemCount` for the
+  unfiltered length; the external query is unregistered after the step loop, as
+  `UEnvQueryManager::RunInstantQuery` does; a null `PrepareQueryInstance` now
+  produces a full failed result instead of an empty payload.
+- **Lifecycle leaks**: PIE delegates are removed in every terminal path
+  (`FinishSession`, `EndPIE`, `AbortToIdle`, `Shutdown`) and re-subscribed
+  instead of accumulating duplicates per session; `BTForgeCore` now implements
+  `ShutdownModule` and tears the verify manager down; `AbortToIdle` re-enables
+  the HTTP listeners and persists its result like every other terminal path.
+- **`JsonEscape` produced invalid JSON** when a value contained `\"` (quotes
+  were escaped before backslashes); it now escapes backslash first and maps
+  control characters.
+- **`blackboardInit` silently no-opped on most key types**: every value went
+  through `SetValueAsFloat/Bool/String`. It is now type-directed (Int, Float,
+  Bool, Enum by name or number, Vector/Rotator from `[x,y,z]` or `{X,Y,Z}`,
+  String, Name, Object/Class by asset path) and rejects a mismatched shape with
+  an explicit error. Value shapes are dispatched on `EJson` type instead of
+  `TryGet*` probing (`FJsonValueString::TryGetBool` returns `true` for any
+  string).
+- **Sub-tick trees looked like "never started"**: sampling started after the
+  first 0.1 s tick; a `t=0` sample is taken right after `StartTree` and
+  `running_after_start` uses that signal.
+- **Duration window**: the upper bound was
+  `expected + max(tolerance + 1.5, expected)`. It is now
+  `expected + tolerance + clamp(3 x worst frame, 1 s, 2 s)`, and the SingleRun
+  hard limit is `durationSec + 2 s` (or `expected + tolerance + slack + 2 s`).
+- **Option leakage between sessions**: `FBTForgeVerifyOptions` was reused across
+  `start_verify` calls, so a field omitted from the new request kept the previous
+  session's value (e.g. a stale `blackboardInit`). Options are reset before each
+  parse.
+- **Guards**: `start_verify` refuses to start while a PIE/SIE session is already
+  running (BTForge never stops a session it did not start), and `bareGameMode`
+  with no `mapPath` no longer falls back to the project's current map (a Lyra map
+  asserts on a bare GameMode) - it uses
+  `/Engine/Maps/Templates/Template_Default` and reports the choice.
+- `BTForge.uplugin` / `BTForgeOfficial.uplugin` now report 2.2.1 (they were still
+  2.1/2.0 while the code said 2.2.0), and the MCP `initialize` response reports
+  `2.2.1`.
+
+### Fixed — second review pass (adversarial read of the fixed code)
+
+- **Log capture was unsynchronized**: `GLog` (an `FOutputDeviceRedirector`)
+  dispatches to devices under a *read* lock, so worker threads call
+  `Serialize()` during PIE startup; `TArray::Add` racing on `Errors` corrupts the
+  heap, and an unlocked copy could drop a real error and let `no_log_errors` pass
+  falsely. The capture now has an `FCriticalSection` (`FScopeLock` in
+  `Serialize`, locked reset/copy).
+- **EQS `query_ran` was hard-coded true**: a query truncated by the 1000-step cap
+  or aborted still left `NumValidItems > 0` (it is set at generation time), so it
+  reported `pass:true` / `status:"done"` without ever completing. `query_ran` now
+  requires `IsFinished() && IsSuccessful()`, and a hit step cap is reported.
+- **"Tree started" was read from `IsRunning()`**: `StartTree` executes the first
+  task synchronously, so a tree that completes immediately already reports
+  `IsRunning()==false` (false failure), while a `PushInstance` failure leaves it
+  true (false pass). The manager now subscribes
+  `FBehaviorTreeDelegates::OnTreeStarted` for its own component and also checks
+  `GetRootTree()` after the start.
+- **`blackboardInit` was silently skipped when the tree has no blackboard**: the
+  whole block (including the unknown-key check) was guarded by
+  `Blackboard != nullptr`. A requested init without a blackboard asset is now an
+  explicit failure.
+- **Session ids could repeat** (`FPlatformTime::Cycles() & 0x7FFFFFF` wraps every
+  ~0.7 s at 3 GHz, and clients poll an on-disk result by id): ids are now
+  `V<sequence>_<cycles>`, and the smoke script clears the stale file first.
+- **Own teardown tripped the "PIE already running" guard**: `RequestEndPlayMap`
+  only *queues* the teardown for the next editor tick. `start_verify` now answers
+  `error:"teardown_pending", retry:true` in that case instead of claiming a
+  foreign session; `Shutdown` cancels a queued request
+  (`CancelRequestPlaySession`) instead of leaving it to start after unload.
+- **Play settings were not pinned**: a null `EditorPlaySettings` makes
+  `RequestPlaySession` duplicate the project CDO, so "2 clients / separate server
+  / new window" preferences produced several PIE worlds and `FindPIEWorld` could
+  pick a dedicated server. The request now pins a standalone single-client
+  settings object, and `FindPIEWorld` prefers a non-dedicated world.
+- **`gameModeClassPath` load failures were swallowed** (the run then used the
+  map's GameMode while reporting done): now an explicit error that also leaves
+  the manager startable.
+- **`blackboardInit` gaps**: enum keys declared by `EnumName` (EnumType null) now
+  resolve, numeric enum values are range-checked, `null` clears Object/Class
+  keys, and Bool accepts `"1"/"0"`.
+- **Key names in `blackboardFinal` were not JSON-escaped** (a quote in a key made
+  the document invalid); one `RequestEndPlayMap` call was unguarded.
+- **Numeric options**: an explicit `durationSec:0`, a negative tolerance or
+  `expectedDurationSec:0` is now an error instead of silently using the default
+  (which had weakened the contract); `toleranceSec:0` is honored.
+- The fixture now assigns `AAIController::BrainComponent`, so nodes that read
+  `GetBrainComponent()` see a real component.
+
+### Verified
+
+- UE 5.8 built-in endpoint (`:8090`): base suite PASS, M1/M2 suite **35/35**,
+  M3 suite **35/35**.
+- UE 5.8 official endpoint (`:8000`): M3 suite **35/35**, 10 tools registered.
+- UE 5.5 blank project (`C:\UEProject\BTForgeTest55`): the changed sources
+  compile with **zero changes**; M3 suite **35/35**, M1/M2 **35/35**, base suite
+  PASS (BT SingleRun/Looped, typed blackboard round-trip, aggregation negative,
+  EQS itemCount=289 on the engine template map).
+
 ## [2.2.0] — 2026-10-29
 
 ### Added

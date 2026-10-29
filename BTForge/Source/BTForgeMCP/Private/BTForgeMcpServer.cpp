@@ -3,6 +3,7 @@
 #include "Async/Async.h"
 #include "BTForgeCatalogLibrary.h"
 #include "BTForgeEQSLibrary.h"
+#include "BTForgeVerifyLibrary.h"
 #include "BTForgeLibrary.h"
 #include "Dom/JsonObject.h"
 #include "HttpPath.h"
@@ -149,6 +150,16 @@ namespace
 				TEXT("Return a machine-readable inventory of what can be used in this project: native + project Blueprint BT node classes (with class paths and editable param names), EQS query assets, native/Blueprint EQS contexts, generators and tests, plus the short type aliases accepted by the spec language. Call this before authoring a spec so class paths are real instead of guessed. Read-only."),
 				TEXT(R"json({"type":"object","properties":{"SectionJson":{"type":["object","string"],"description":"Optional {\"section\":\"all\"|\"bt\"|\"eqs\"}; defaults to all."}},"required":[]})json")
 			},
+			{
+				TEXT("start_verify"),
+				TEXT("Runtime verification (M3): start an in-process PIE session and actually run a generated asset. OptionsJson: {kind:\"bt\"|\"eqs\", assetPath, mapPath?, mode?(bt: SingleRun|Looped), durationSec?, expectedDurationSec?, toleranceSec?, expectedActiveTask?, blackboardInit?{key:value}, fixturePawn?(bt, default true), bareGameMode?(default true), gameModeClassPath?, queryRunMode?, queryParams?{name:number}}. Starts PIE with GameModeOverride=AGameModeBase (bareGameMode: mapPath defaults to /Engine/Maps/Templates/Template_Default because a Lyra map asserts on a bare GameMode), spawns an AIController + Pawn fixture, starts the tree (SingleRun finishes naturally; Looped must keep running for durationSec) or runs the EQS query synchronously, samples IsRunning/active tasks from t=0. Fails fast if a PIE/SIE session is already running. Returns {sessionId,status:pending,mapPath}; poll get_verify_result."),
+				TEXT(R"json({"type":"object","properties":{"OptionsJson":{"type":["object","string"],"description":"Verification options as described."}},"required":["OptionsJson"]})json")
+			},
+			{
+				TEXT("get_verify_result"),
+				TEXT("Poll a runtime verification session started by start_verify. Returns {status:pending|running} until finished, then the full result: pass (top-level boolean = AND of every checks[] entry; status is done only when pass is true), checks[{name,pass,detail}] (pie_started, running_after_start, expected_active_task_seen, finished_gracefully, finished_in_window, kept_running_for_duration, no_log_errors), samples timeline (from t=0), activeTasksSeen, blackboardFinal (bt) or itemCount(=NumValidItems)/rawItemCount/itemType/topScores (eqs), logErrors list."),
+				TEXT(R"json({"type":"object","properties":{"SessionId":{"type":"string","description":"Session id returned by start_verify."}},"required":["SessionId"]})json")
+			},
 		};
 		return Tools;
 	}
@@ -265,6 +276,36 @@ namespace
 			}
 			LibraryResult = UBTForgeCatalogLibrary::GetCapabilityCatalog(SectionJson);
 		}
+		else if (ToolName == TEXT("start_verify") || ToolName == TEXT("get_verify_result"))
+		{
+			// M3 runtime verification. Includes UE 5.5 in the description because
+			// PIE works there too; on any engine the session is polled, never blocked.
+			FString OptionsJson;
+			if (ToolName == TEXT("start_verify"))
+			{
+				if (!GetToolArgAsJsonText(Args, TEXT("OptionsJson"), OptionsJson, ArgError))
+				{
+					return MakeToolErrorText(ArgError);
+				}
+				LibraryResult = UBTForgeVerifyLibrary::StartVerify(OptionsJson);
+				bOutIsToolError = false;
+				return LibraryResult;
+			}
+			else
+			{
+				FString SessionId;
+				if (Args.IsValid() && Args->TryGetStringField(TEXT("SessionId"), SessionId))
+				{
+					LibraryResult = UBTForgeVerifyLibrary::GetVerifyResult(SessionId);
+				}
+				else
+				{
+					return MakeToolErrorText(TEXT("missing required argument 'SessionId'"));
+				}
+				bOutIsToolError = false; // verify results are data, not tool errors
+				return LibraryResult;
+			}
+		}
 		else
 		{
 			return MakeToolErrorText(FString::Printf(TEXT("unknown tool '%s'"), *ToolName));
@@ -305,7 +346,7 @@ namespace
 
 		TSharedRef<FJsonObject> ServerInfo = MakeShared<FJsonObject>();
 		ServerInfo->SetStringField(TEXT("name"), TEXT("BTForge"));
-		ServerInfo->SetStringField(TEXT("version"), TEXT("2.1.0"));
+		ServerInfo->SetStringField(TEXT("version"), TEXT("2.2.1"));
 
 		TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
 		Result->SetStringField(TEXT("protocolVersion"), Negotiated);
