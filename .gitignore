@@ -1,0 +1,30 @@
+# Unreal Engine generated artifacts
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+Build/Receipts/
+*.sln
+*.suo
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb
+.vs/
+.idea/
+*.pdb
+*.dll
+*.lib
+*.exp
+*.modules
+*.target
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS
+Thumbs.db
+.DS_Store
+Desktop.ini

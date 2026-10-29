@@ -1,0 +1,45 @@
+#include "BTForgeToolset.h"
+
+#include "BTForgeCatalogLibrary.h"
+#include "BTForgeEQSLibrary.h"
+#include "BTForgeLibrary.h"
+
+FString UBTForgeToolset::CreateBehaviorTreeAsset(const FString& AssetPath, const FString& BlackboardJson)
+{
+	return UBTForgeLibrary::CreateBehaviorTreeAsset(AssetPath, BlackboardJson);
+}
+
+FString UBTForgeToolset::BuildBehaviorTree(const FString& AssetPath, const FString& TreeJson)
+{
+	return UBTForgeLibrary::BuildBehaviorTree(AssetPath, TreeJson);
+}
+
+FString UBTForgeToolset::InspectBehaviorTree(const FString& AssetPath)
+{
+	return UBTForgeLibrary::InspectBehaviorTree(AssetPath);
+}
+
+FString UBTForgeToolset::ValidateBehaviorTree(const FString& TreeJson, const FString& BlackboardJson)
+{
+	return UBTForgeLibrary::ValidateBehaviorTree(TreeJson, BlackboardJson);
+}
+
+FString UBTForgeToolset::CreateEQSAsset(const FString& AssetPath, const FString& QueryJson)
+{
+	return UBTForgeEQSLibrary::CreateEQSAsset(AssetPath, QueryJson);
+}
+
+FString UBTForgeToolset::InspectEQSAsset(const FString& AssetPath)
+{
+	return UBTForgeEQSLibrary::InspectEQSAsset(AssetPath);
+}
+
+FString UBTForgeToolset::ValidateEQSSpec(const FString& QueryJson)
+{
+	return UBTForgeEQSLibrary::ValidateEQSSpec(QueryJson);
+}
+
+FString UBTForgeToolset::GetCapabilityCatalog(const FString& SectionJson)
+{
+	return UBTForgeCatalogLibrary::GetCapabilityCatalog(SectionJson);
+}

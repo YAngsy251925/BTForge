@@ -1,0 +1,39 @@
+{
+	"FileVersion": 3,
+	"Version": 3,
+	"VersionName": "2.1",
+	"FriendlyName": "BT Forge",
+	"Description": "Deterministic Behavior Tree / Blackboard / EQS builder with a self-contained MCP server (Streamable HTTP). BTForgeRuntime ships the runtime node/context classes; BTForgeCore+BTForgeMCP are editor-only. Engine 5.4+. Pair with BTForgeOfficial on 5.8+ to also expose the tools through Epic's ModelContextProtocol server.",
+	"Category": "AI",
+	"CreatedBy": "YAngsy251925",
+	"CreatedByURL": "https://github.com/YAngsy251925",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"NoRedist": false,
+	"EditorOnly": false,
+	"EnabledByDefault": true,
+	"CanContainContent": false,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": true,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "BTForgeRuntime",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "BTForgeCore",
+			"Type": "Editor",
+			"LoadingPhase": "Default",
+			"TargetAllowList": [ "Editor" ]
+		},
+		{
+			"Name": "BTForgeMCP",
+			"Type": "Editor",
+			"LoadingPhase": "Default",
+			"TargetAllowList": [ "Editor" ]
+		}
+	]
+}
