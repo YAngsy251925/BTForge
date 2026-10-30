@@ -177,6 +177,9 @@ python BTForge/Tools/mcp_smoke.py             # BT 基础套件
 python BTForge/Tools/mcp_smoke.py --l2        # + MoveTo/RunEQS 写路径
 python BTForge/Tools/mcp_m1m2_smoke.py        # EQS 构建 + 能力目录 + 空跑校验（35 项）
 python BTForge/Tools/mcp_m1m2_smoke.py --official  # 同一套件走 Epic 官方 :8000
+python BTForge/Tools/mcp_m3_smoke.py          # PIE 运行层验证
+python BTForge/Tools/mcp_m4_goldenpath.py     # M4 黄金路径（catalog → 引用 → PIE）
+python BTForge/Tools/mcp_m5_nodes.py          # M5 原生节点库（catalog → 规格 → 8 个 PIE run）
 ```
 
 ---
@@ -233,6 +236,34 @@ python BTForge/Tools/mcp_m1m2_smoke.py --official  # 同一套件走 Epic 官方
 - 参数名就是 UPROPERTY 精确名。先调 `get_capability_catalog` 可看到参数名、C++ 类型和 **JSON 形状**（`boolean`、`number`、`enum: ...`、`class path (...)`）。
 - EQS 的 context 是**按类引用**而不是按实例。`BTForgeRuntime` 提供 `BTForgeEnvQueryContext_Blackboard`（`/Script/BTForgeRuntime.BTForgeEnvQueryContext_Blackboard`），其 `BlackboardKey` 取类默认值（按 query 配置键需要蓝图子类，见路线图）。
 
+### 原生节点库（M5）
+
+`BTForgeRuntime` 内置 7 个参数化原生节点——过去需要写蓝图才能有的常用行为。它们带完整参数 schema 出现在 `get_capability_catalog` 里，规格里可用短别名：
+
+| 别名 | 类 | 作用 |
+|---|---|---|
+| `ComputeValue`（任务） | `BTForgeTask_ComputeValue` | `LeftKey` <op> （`RightKey` 或 `RightConstant`）→ `ResultKey`；Add/Subtract/Multiply/Divide/Min/Max；Float/Int 键 |
+| `Log`（任务） | `BTForgeTask_LogMessage` | 向 `LogBTForge` 写检查点消息（可附带一个键值）；`Severity=Error` 会让 verify 的 `no_log_errors` 如实失败，`Warning` 出现在 `logWarnings` |
+| `SetValue`（服务） | `BTForgeService_SetBlackboardValue` | 周期性按类型写值：各类型常量，或从兼容的 `SourceKey` 复制 |
+| `UpdateDistance`（服务） | `BTForgeService_UpdateDistance` | 周期性算 `dist(SourceKey, TargetKey)`（Object-Actor 或 Vector 键）→ Float `ResultKey` |
+| `FloatCompare`（装饰器） | `BTForgeDecorator_FloatCompare` | `BlackboardKey` <op> （`CompareToKey` 或 `CompareToValue`），六种运算符；观察键变化并中止分支 |
+| `DistanceCheck`（装饰器） | `BTForgeDecorator_DistanceCheck` | 距离范围门 `dist(SourceKey, TargetKey)` ∈ `[MinDistance, MaxDistance]`；负数边界=该侧不启用；两侧都不启用=失效关闭 |
+| `Chance`（装饰器） | `BTForgeDecorator_Chance` | 以 `Probability`% 概率通过（0/100 精确） |
+
+示例——持续刷新 `DistToTarget` 并用它门控攻击分支：
+
+```json
+{"type": "Selector", "services": [
+   {"type": "UpdateDistance", "params": {"SourceKey": "SelfActor", "TargetKey": "TargetEnemy", "ResultKey": "DistToTarget"}}],
+ "children": [
+   {"type": "Sequence",
+    "decorators": [{"type": "FloatCompare", "params": {"BlackboardKey": "DistToTarget", "Operator": "LessOrEqual", "CompareToValue": 800}}],
+    "children": [{"type": "MoveTo", "params": {"BlackboardKey": "TargetEnemy", "AcceptableRadius": 150}}]},
+   {"type": "Log", "params": {"Message": "target out of range", "Severity": "Warning"}}]}
+```
+
+引擎自带节点（5.6+ 的 Set-key 任务家族支持键绑定写法 `{"Value": {"Key": "SomeKey"}}`）与蓝图节点类出现在同一个目录里，可与这些别名自由混用。
+
 ---
 
 ## 开发进度
@@ -250,16 +281,16 @@ python BTForge/Tools/mcp_m1m2_smoke.py --official  # 同一套件走 Epic 官方
 | **M2 — 能力目录 + 空跑校验** | ✅ 2026-10-28 | 能力目录、BT/EQS 空跑校验；工具总数 8 |
 | **M3 — 运行层验证** | ✅ 2026-10-29 | 进程内 PIE：`StartTree(SingleRun/Looped)` + 执行时间线采样；EQS instant query 断言；两段式异步协议；2.2.1 补齐 `pass` 聚合、PIE 启动语义、EQS 有效项计数、夹具 Pawn 等修复 |
 | **M4 — 黄金路径端到端** | ✅ 2026-10-30 | `inspect_references`（引用/内容域策略，资产+规格两种模式）、`pawnDisplacement`/`expectedMinPawnDisplacement`、`Tools/mcp_m4_goldenpath.py`：catalog → 规格 → 资产 → 引用 → PIE，含坏规格→修复回路与可选导航图运动相位；工具 11 个 |
-| M5 — 原生节点库 | ⏳ 规划 | 参数化原生 service/decorator/task（BTS 等价物，免蓝图） |
+| **M5 — 原生节点库** | ✅ 2026-10-30 | `BTForgeRuntime` 内 7 个参数化原生 service/decorator/task（ComputeValue、Log、SetValue、UpdateDistance、FloatCompare、DistanceCheck、Chance）+ 规格别名（别名表即 catalog 权威源）；`Tools/mcp_m5_nodes.py` 在 PIE 里逐行为验证；工具 11 个 |
 | M6 — 蓝图节点生成 | ⏳ 规划 | 先做"数据-only 蓝图子类"（改 CDO），再做受限事件图配方 |
 
-### 当前版本验证矩阵（v2.3.0）
+### 当前版本验证矩阵（v2.4.0）
 
 | 环境 | 结果 |
 |---|---|
-| UE 5.8，自研 server（`:8090`） | BT 基础套件 PASS；M1/M2 套件 **35/35 PASS**；M3 运行套件 **35/35 PASS**；M4 黄金路径 **PASS**（22 项；含导航图运动相位 29 项） |
-| UE 5.8，官方 MCP server（`:8000`） | M1/M2 套件 **35/35 PASS**；M3 运行套件 **35/35 PASS**；M4 黄金路径 **PASS**；11 个工具在官方 toolset 中注册成功 |
-| UE 5.5，空白工程 | 零源码改动编译通过；M1/M2 套件 **35/35 PASS**；M3 运行套件 **35/35 PASS**；M4 黄金路径 **PASS** |
+| UE 5.8，自研 server（`:8090`） | BT 基础套件 PASS；M1/M2 套件 **35/35 PASS**；M3 运行套件 **35/35 PASS**；M4 黄金路径 **PASS**（22 项；含导航图运动相位 29 项）；M5 节点库套件 **PASS**（8 个 PIE 行为 run） |
+| UE 5.8，官方 MCP server（`:8000`） | M1/M2 套件 **35/35 PASS**；M3 运行套件 **35/35 PASS**；M4 黄金路径 **PASS**；M5 节点库套件 **PASS**；11 个工具在官方 toolset 中注册成功 |
+| UE 5.5，空白工程 | 零源码改动编译通过；M1/M2 套件 **35/35 PASS**；M3 运行套件 **35/35 PASS**；M4 黄金路径 **PASS**；M5 节点库套件 **PASS** |
 | UE 5.4 / 5.6 / 5.7 | 未实测（API 按稳定性选型、无版本条件编译） |
 
 ---
@@ -273,6 +304,7 @@ python BTForge/Tools/mcp_m1m2_smoke.py --official  # 同一套件走 Epic 官方
 - **引用策略的判定边界**（M4 已实现）：`inspect_references` 对引擎内置模块用一份**明示的编辑器模块清单**判定（内置模块没有运行时可读的宿主类型），插件模块则读 uplugin 描述符（`Type=Editor` / `TargetAllowList` 不含 `Game`）；另外用 cooker 自己的 `IsEditorOnlyObject` 兜底。`/Engine` 内容只给 `warn`（能否进 cook 取决于引用链），不是错误。
 - **项目图上的 pass 可能被项目自身日志拖成 false**：`no_log_errors` 会把 PIE 期间项目 GameFeature/蓝图报的错误算进来（实测 Lyra 的 GCNL_Spawning 脚本错误）。M4 黄金路径因此在项目图上只断言"运动证据"（`pawn_moved`），并把项目噪声如实报告出来，而不是过滤掉。
 - **`inspect_behavior_tree` 只回标量参数**：结构体里的对象引用（如 `EQSRequest.QueryTemplate`）由 `inspect_references` 以精确 JSON 路径报告。
+- **引擎 Set-key 任务家族是 5.6+ 才有的**：冒烟套件不能无条件引用它（M5 套件先探 catalog、没有就跳过对应 interop 控制项）。
 - **能力目录里蓝图节点没有参数 schema**（只有原生类有），避免逐个加载蓝图 CDO。
 - **未挂载的 GameFeature/插件内容可能不在目录里**（AssetRegistry 只能看到已挂载内容；工具输出里有 note 提示）。
 - **5.4/5.6/5.7 未实测**：开发机只有 5.5 与 5.8。

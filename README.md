@@ -183,6 +183,8 @@ python BTForge/Tools/mcp_m3_smoke.py --map /ShooterCore/Maps/L_ShooterGym  # EQS
 python BTForge/Tools/mcp_m4_goldenpath.py        # M4 golden path (catalog -> references -> PIE)
 python BTForge/Tools/mcp_m4_goldenpath.py --official
 python BTForge/Tools/mcp_m4_goldenpath.py --map /ShooterCore/Maps/L_ShooterGym --expect-movement 300
+python BTForge/Tools/mcp_m5_nodes.py             # M5 native node library (catalog -> specs -> 8 PIE runs)
+python BTForge/Tools/mcp_m5_nodes.py --official
 ```
 
 ---
@@ -239,6 +241,38 @@ Notes that matter in practice:
 - Parameter names are exact UPROPERTY names. Call `get_capability_catalog` to see names, C++ types, and **JSON shapes** (`boolean`, `number`, `enum: ...`, `class path (...)`).
 - EQS references contexts by **class**, not by instance. `BTForgeRuntime` ships `BTForgeEnvQueryContext_Blackboard` (`/Script/BTForgeRuntime.BTForgeEnvQueryContext_Blackboard`); its `BlackboardKey` value comes from the class default (per-query key configuration needs a Blueprint subclass — see roadmap).
 
+### Native node library (M5)
+
+`BTForgeRuntime` ships seven parameterized native nodes — the common behaviors that
+used to require Blueprint authoring. They appear in `get_capability_catalog` with
+full parameter schemas and accept short aliases in specs:
+
+| Alias | Class | What it does |
+|---|---|---|
+| `ComputeValue` | `BTForgeTask_ComputeValue` | `LeftKey` <op> (`RightKey` or `RightConstant`) → `ResultKey`; ops Add/Subtract/Multiply/Divide/Min/Max; Float/Int keys |
+| `Log` | `BTForgeTask_LogMessage` | checkpoint message (+ one key value) to `LogBTForge`; `Severity` `Error` deliberately fails a verify run, `Warning` shows up in `logWarnings` |
+| `SetValue` (service) | `BTForgeService_SetBlackboardValue` | periodic typed write: per-type constants, or a copy of any compatible `SourceKey` |
+| `UpdateDistance` (service) | `BTForgeService_UpdateDistance` | periodic `dist(SourceKey, TargetKey)` (Object-actor or Vector keys) → Float `ResultKey` |
+| `FloatCompare` (decorator) | `BTForgeDecorator_FloatCompare` | `BlackboardKey` <op> (`CompareToKey` or `CompareToValue`), six operators; observes its keys and aborts the branch on change |
+| `DistanceCheck` (decorator) | `BTForgeDecorator_DistanceCheck` | range gate `dist(SourceKey, TargetKey)` in `[MinDistance, MaxDistance]`; a negative bound disables that side; no bounds = fail-closed |
+| `Chance` (decorator) | `BTForgeDecorator_Chance` | passes with `Probability` percent (exact at 0/100) |
+
+Example — keep a `DistToTarget` key fresh and gate an attack branch on it:
+
+```json
+{"type": "Selector", "services": [
+   {"type": "UpdateDistance", "params": {"SourceKey": "SelfActor", "TargetKey": "TargetEnemy", "ResultKey": "DistToTarget"}}],
+ "children": [
+   {"type": "Sequence",
+    "decorators": [{"type": "FloatCompare", "params": {"BlackboardKey": "DistToTarget", "Operator": "LessOrEqual", "CompareToValue": 800}}],
+    "children": [{"type": "MoveTo", "params": {"BlackboardKey": "TargetEnemy", "AcceptableRadius": 150}}]},
+   {"type": "Log", "params": {"Message": "target out of range", "Severity": "Warning"}}]}
+```
+
+Engine-native nodes (the engine's own `Set-key` tasks on 5.6+ take key-bound
+values via `{"Value": {"Key": "SomeKey"}}`) and Blueprint node classes appear in
+the same catalog and mix freely with these aliases.
+
 ---
 
 ## Development progress
@@ -256,16 +290,16 @@ Notes that matter in practice:
 | **M2 — catalog + validate-only** | ✅ 2026-10-28 | Capability catalog, dry-run validation for BT and EQS, 8 tools total |
 | **M3 — runtime verification** | ✅ 2026-10-29 | In-process PIE: `StartTree(SingleRun/Looped)` + execution timeline sampling; EQS instant query with result assertions; two-call async protocol; 2.2.1 hardens `pass` aggregation, PIE start semantics, EQS valid-item counting and the pawn fixture |
 | **M4 — golden path E2E** | ✅ 2026-10-30 | `inspect_references` (reference / content-domain policy, asset + spec mode), `pawnDisplacement` + `expectedMinPawnDisplacement`, `Tools/mcp_m4_goldenpath.py`: catalog → spec → asset → references → PIE, with a broken-build → repair loop and an opt-in nav-meshed movement phase. 11 tools |
-| M5 — native node library | ⏳ planned | Parameterized native service/decorator/task classes (BTS-equivalents without Blueprint authoring) |
+| **M5 — native node library** | ✅ 2026-10-30 | 7 parameterized native service/decorator/task classes in `BTForgeRuntime` (ComputeValue, Log, SetValue, UpdateDistance, FloatCompare, DistanceCheck, Chance) + spec aliases exported as the catalog's authoritative tables; `Tools/mcp_m5_nodes.py` verifies every behavior in PIE. 11 tools |
 | M6 — Blueprint node generation | ⏳ planned | Start with data-only Blueprint subclasses (CDO overrides), then constrained event-graph recipes |
 
 ### Verification matrix (current release)
 
 | Environment | Result |
 |---|---|
-| UE 5.8, built-in server (`:8090`) | BT core suite PASS; M1/M2 suite **35/35 PASS**; M3 runtime suite **35/35 PASS**; M4 golden path **PASS** (22 checks, 29 with movement) |
-| UE 5.8, official MCP server (`:8000`) | M1/M2 suite **35/35 PASS**; M3 runtime suite **35/35 PASS**; M4 golden path **PASS**; 11 tools registered in the official toolset |
-| UE 5.5, blank project | compiles with zero source changes; M1/M2 suite **35/35 PASS**; M3 runtime suite **35/35 PASS**; M4 golden path **PASS** |
+| UE 5.8, built-in server (`:8090`) | BT core suite PASS; M1/M2 suite **35/35 PASS**; M3 runtime suite **35/35 PASS**; M4 golden path **PASS** (22 checks, 29 with movement); M5 node-library suite **PASS** (8 PIE behavior runs) |
+| UE 5.8, official MCP server (`:8000`) | M1/M2 suite **35/35 PASS**; M3 runtime suite **35/35 PASS**; M4 golden path **PASS**; M5 node-library suite **PASS**; 11 tools registered in the official toolset |
+| UE 5.5, blank project | compiles with zero source changes; M1/M2 suite **35/35 PASS**; M3 runtime suite **35/35 PASS**; M4 golden path **PASS**; M5 node-library suite **PASS** |
 | UE 5.4 / 5.6 / 5.7 | not yet tested (APIs chosen for stability; no version conditionals) |
 
 ---

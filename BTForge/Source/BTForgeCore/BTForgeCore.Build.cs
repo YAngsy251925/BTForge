@@ -24,6 +24,9 @@ public class BTForgeCore : ModuleRules
 			// plugin descriptors, so the report can tell cook-safe classes from
 			// editor-only ones.
 			"Projects",
+			// M5: the spec-alias tables reference the runtime node library's
+			// classes directly (StaticClass), so renames break at compile time.
+			"BTForgeRuntime",
 			"UnrealEd"
 		});
 	}

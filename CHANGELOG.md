@@ -3,6 +3,79 @@
 All notable changes to BT Forge are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.4.0] — 2026-10-30
+
+M5: a native parameterized node library shipped in `BTForgeRuntime` — common
+service/decorator/task behaviors that previously required Blueprint authoring,
+plus the spec-alias and catalog plumbing that makes them first-class. Still
+**11 MCP tools**; the nodes ride the existing builder/verify pipeline.
+
+### Added
+
+- **`BTForgeRuntime` node library** (`BTForgeBehaviorNodes.{h,cpp}`, 7 classes,
+  all stateless, all cook-safe, no version conditionals):
+  - tasks `UBTForgeTask_ComputeValue` (Left key <op> Right key-or-constant →
+    Result key; Add/Subtract/Multiply/Divide/Min/Max; Int results round) and
+    `UBTForgeTask_LogMessage` (message + optional key value to `LogBTForge`;
+    Severity Log/Warning/Error — Error deliberately fails a verify run's
+    `no_log_errors`, Warning surfaces in `logWarnings`);
+  - services `UBTForgeService_SetBlackboardValue` (periodic typed write:
+    per-type constants, or a copy of any compatible key) and
+    `UBTForgeService_UpdateDistance` (periodic distance between two Object/Vector
+    keys → Float key — the utility-AI input pattern);
+  - decorators `UBTForgeDecorator_FloatCompare` (key vs constant-or-key with
+    six operators — the engine's `CompareBBEntries` only does Equal/NotEqual
+    between two keys), `UBTForgeDecorator_DistanceCheck` (range gate between
+    two location sources, negative bound = disabled, no bounds = fail-closed),
+    and `UBTForgeDecorator_Chance` (probability gate, exact at 0/100).
+  - The numeric/distance decorators observe their keys and abort the underlying
+    branch on change (engine observer pattern).
+- **Spec aliases** for the library: `ComputeValue`, `Log`, `SetValue`,
+  `UpdateDistance`, `FloatCompare`, `DistanceCheck`, `Chance`. The alias tables
+  are now exported from `UBTForgeLibrary` (`GetNodeTypeAliases` /
+  `GetAuxTypeAliases`) and the catalog's `specTypes` lists are derived from
+  those same tables, so the catalog can no longer drift from the parser
+  whitelist (the EQS aliases already worked this way).
+- **`Tools/mcp_m5_nodes.py`**: catalog/schema checks, alias + nested-param
+  dry-runs (including a version-gated interop control using the engine's own
+  `BTTask_SetKeyValueFloat` with a key-bound `FValueOrBBKey` value), and 8 PIE
+  behavior runs asserting blackboard outcomes, service ticks, branch selection,
+  log-severity effects, and the M4 reference policy over an M5 asset.
+
+### Fixed
+
+- **Key-bound `FValueOrBBKey_*` params were not writable**: a struct param with
+  a `DefaultValue` member forced the JSON value through that member, so the
+  engine's Set-key tasks (5.6+) could only take constants. An object value is
+  now applied member-wise (`{"Value": {"Key": "SomeKey"}}` binds the key).
+- **Optional key selectors resolved to a wrong key**: calling
+  `ResolveSelectedKey` on a selector whose `SelectedKeyName` is None runs the
+  engine's `InitSelection`, which silently binds the *first compatible
+  blackboard key* — a "not configured" source became a wrong read. Unset
+  selectors are now left unresolved (`InvalidateResolvedKey`).
+
+### Verified
+
+- UE 5.8, built-in endpoint (`:8090`): M5 suite **PASS** (8 PIE behavior runs),
+  M3 suite **35/35**, M1/M2 suite **35/35**, base suite PASS, M4 golden
+  path **PASS**.
+- UE 5.8, official endpoint (`:8000`): M5 suite **PASS**, M3 suite **35/35**,
+  11 tools registered.
+- UE 5.5 blank project: compiles with **zero changes**; M5 suite **PASS**,
+  M3 suite **35/35**, M1/M2 suite **35/35**, base suite PASS.
+
+### Known limitations (M5 scope)
+
+- The engine's `UBTTask_SetKeyValue*` family exists only on 5.6+; smoke suites
+  must not reference it unconditionally (the M5 suite probes the catalog and
+  skips the interop control on engines without it).
+- The library is deliberately small: engine natives (`Wait`, `MoveTo`,
+  `Cooldown`, `TimeLimit`, `Loop`, `ForceSuccess`, `IsAtLocation`,
+  `RotateToFaceBBEntry`, ...) already cover the rest and appear in the catalog
+  alongside these classes.
+- `LogMessage` writes to the `LogBTForge` category only and appends at most one
+  key value; it is a checkpoint, not a logging framework.
+
 ## [2.3.0] — 2026-10-30
 
 M4: the golden path end to end (catalog → spec → asset → references → runtime),

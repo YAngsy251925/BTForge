@@ -364,7 +364,7 @@ namespace
 
 		TSharedRef<FJsonObject> ServerInfo = MakeShared<FJsonObject>();
 		ServerInfo->SetStringField(TEXT("name"), TEXT("BTForge"));
-		ServerInfo->SetStringField(TEXT("version"), TEXT("2.3.0"));
+		ServerInfo->SetStringField(TEXT("version"), TEXT("2.4.0"));
 
 		TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
 		Result->SetStringField(TEXT("protocolVersion"), Negotiated);

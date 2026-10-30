@@ -97,4 +97,20 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "BTForge")
 	static FString InspectBehaviorTree(const FString& AssetPath);
+
+	/**
+	 * Spec aliases for tree node "type" values, authoritative for both the
+	 * spec parser and the capability catalog: "Sequence"/"Selector"/"Wait"/
+	 * "MoveTo"/"RunEQS" plus the M5 native library aliases "ComputeValue"/"Log".
+	 * Anything else must be a '/Script/...' or '/Game/..._C' class path.
+	 */
+	static const TMap<FString, UClass*>& GetNodeTypeAliases();
+
+	/**
+	 * Spec aliases for auxiliary nodes; Kind is "service" ("RunEQS", "SetValue",
+	 * "UpdateDistance") or "decorator" ("Blackboard", "FloatCompare",
+	 * "DistanceCheck", "Chance"). Same table the parser accepts, so the catalog
+	 * cannot drift from the whitelist.
+	 */
+	static const TMap<FString, UClass*>& GetAuxTypeAliases(const FString& Kind);
 };

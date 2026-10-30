@@ -1,6 +1,7 @@
 #include "BTForgeCatalogLibrary.h"
 
 #include "BTForgeEQSLibrary.h"
+#include "BTForgeLibrary.h"
 #include "BTForgeParamSchema.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
@@ -304,17 +305,16 @@ FString UBTForgeCatalogLibrary::GetCapabilityCatalog(const FString& SectionJson)
 		BT->SetArrayField(TEXT("blueprintNodes"), BlueprintNodes);
 
 		TSharedRef<FJsonObject> SpecTypes = MakeShared<FJsonObject>();
+		// Alias lists come from UBTForgeLibrary's authoritative tables, so the
+		// catalog can never drift from what the spec parser accepts.
 		TArray<TSharedPtr<FJsonValue>> NodeTypes;
-		for (const TCHAR* Name : { TEXT("Sequence"), TEXT("Selector"), TEXT("Wait"), TEXT("MoveTo"), TEXT("RunEQS") })
-		{
-			NodeTypes.Add(MakeShared<FJsonValueString>(Name));
-		}
+		AddAliasEntries(UBTForgeLibrary::GetNodeTypeAliases(), NodeTypes);
 		SpecTypes->SetArrayField(TEXT("nodeTypes"), NodeTypes);
 		TArray<TSharedPtr<FJsonValue>> ServiceTypes;
-		ServiceTypes.Add(MakeShared<FJsonValueString>(TEXT("RunEQS")));
+		AddAliasEntries(UBTForgeLibrary::GetAuxTypeAliases(TEXT("service")), ServiceTypes);
 		SpecTypes->SetArrayField(TEXT("serviceTypes"), ServiceTypes);
 		TArray<TSharedPtr<FJsonValue>> DecoratorTypes;
-		DecoratorTypes.Add(MakeShared<FJsonValueString>(TEXT("Blackboard")));
+		AddAliasEntries(UBTForgeLibrary::GetAuxTypeAliases(TEXT("decorator")), DecoratorTypes);
 		SpecTypes->SetArrayField(TEXT("decoratorTypes"), DecoratorTypes);
 		TArray<TSharedPtr<FJsonValue>> KeyTypes;
 		for (const TCHAR* Name : { TEXT("Bool"), TEXT("Int"), TEXT("Float"), TEXT("String"), TEXT("Name"), TEXT("Vector"), TEXT("Rotator"), TEXT("Object") })

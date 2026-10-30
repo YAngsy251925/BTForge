@@ -1,5 +1,6 @@
 #include "BTForgeLibrary.h"
 
+#include "BTForgeBehaviorNodes.h"
 #include "AssetToolsModule.h"
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Bool.h"
@@ -123,15 +124,7 @@ namespace
 			}
 			return Class;
 		}
-		static const TMap<FString, UClass*> Types =
-		{
-			{ TEXT("Sequence"), UBTComposite_Sequence::StaticClass() },
-			{ TEXT("Selector"), UBTComposite_Selector::StaticClass() },
-			{ TEXT("Wait"),     UBTTask_Wait::StaticClass() },
-			{ TEXT("MoveTo"),   UBTTask_MoveTo::StaticClass() },
-			{ TEXT("RunEQS"),   UBTTask_RunEQSQuery::StaticClass() },
-		};
-		const UClass* const* Found = Types.Find(TypeName);
+		const UClass* const* Found = UBTForgeLibrary::GetNodeTypeAliases().Find(TypeName);
 		if (Found == nullptr)
 		{
 			OutError = FString::Printf(TEXT("unknown type '%s'. Allowed types: %s"), *TypeName, *WhitelistText());
@@ -150,15 +143,7 @@ namespace
 			const UClass* ExpectedBase = Kind == TEXT("decorator") ? UBTDecorator::StaticClass() : UBTService::StaticClass();
 			return LoadBTClassFromPath(TypeName, const_cast<UClass*>(ExpectedBase), Kind, OutError);
 		}
-		static const TMap<FString, UClass*> Decorators =
-		{
-			{ TEXT("Blackboard"), UBTDecorator_Blackboard::StaticClass() },
-		};
-		static const TMap<FString, UClass*> Services =
-		{
-			{ TEXT("RunEQS"), UBTService_RunEQS::StaticClass() },
-		};
-		const TMap<FString, UClass*>& Table = Kind == TEXT("decorator") ? Decorators : Services;
+		const TMap<FString, UClass*>& Table = UBTForgeLibrary::GetAuxTypeAliases(Kind);
 		const UClass* const* Found = Table.Find(TypeName);
 		if (Found == nullptr)
 		{
@@ -171,13 +156,13 @@ namespace
 	FString AuxWhitelistText(const FString& Kind)
 	{
 		return Kind == TEXT("decorator")
-			? TEXT("decorators: Blackboard, or a '/path/Asset.Asset_C' class path (any non-abstract UBTDecorator-derived class). Multiple decorators on one child combine as AND")
-			: TEXT("services: RunEQS, or a '/path/Asset.Asset_C' class path (any non-abstract UBTService-derived class)");
+			? TEXT("decorators: Blackboard, FloatCompare, DistanceCheck, Chance, or a '/path/Asset.Asset_C' class path (any non-abstract UBTDecorator-derived class). Multiple decorators on one child combine as AND")
+			: TEXT("services: RunEQS, SetValue, UpdateDistance, or a '/path/Asset.Asset_C' class path (any non-abstract UBTService-derived class)");
 	}
 
 	FString WhitelistText()
 	{
-		return TEXT("Sequence, Selector, Wait, MoveTo, RunEQS, or a '/path/Asset.Asset_C' class path (any non-abstract UBTCompositeNode/UBTTaskNode-derived class, engine or blueprint)");
+		return TEXT("Sequence, Selector, Wait, MoveTo, RunEQS, ComputeValue, Log, or a '/path/Asset.Asset_C' class path (any non-abstract UBTCompositeNode/UBTTaskNode-derived class, engine or blueprint)");
 	}
 
 	/** Describe one property's expected value shape, for error messages. */
@@ -352,9 +337,16 @@ namespace
 			// DataPtr is the property VALUE address - for a struct property that
 			// is already the struct data start; do NOT apply the property offset
 			// a second time through ContainerPtrToValuePtr here.
-			// FValueOrBBKey_* family: accept a plain value, write the nested DefaultValue member.
+			// FValueOrBBKey_* family: a JSON object selects per member (e.g.
+			// {"Key": "SomeKey"} for a key-bound value); a scalar writes the
+			// nested DefaultValue.
 			if (FProperty* DefaultProperty = StructProperty->Struct->FindPropertyByName(TEXT("DefaultValue")))
 			{
+				const TSharedPtr<FJsonObject>* SourceObject;
+				if (Value->TryGetObject(SourceObject) && SourceObject->IsValid())
+				{
+					return ApplyParamsToContainer(StructProperty->Struct, DataPtr, SourceObject->ToSharedRef(), KnownBlackboardKeys, ParamPath, OutError);
+				}
 				void* DefaultDataPtr = DefaultProperty->ContainerPtrToValuePtr<void>(DataPtr);
 				return WriteValueToProperty(DefaultProperty, DefaultDataPtr, Value, KnownBlackboardKeys, ParamPath, OutError);
 			}
@@ -912,6 +904,46 @@ namespace
 		}
 		return OutNode;
 	}
+}
+
+const TMap<FString, UClass*>& UBTForgeLibrary::GetNodeTypeAliases()
+{
+	static const TMap<FString, UClass*> Types =
+	{
+		{ TEXT("Sequence"), UBTComposite_Sequence::StaticClass() },
+		{ TEXT("Selector"), UBTComposite_Selector::StaticClass() },
+		{ TEXT("Wait"),     UBTTask_Wait::StaticClass() },
+		{ TEXT("MoveTo"),   UBTTask_MoveTo::StaticClass() },
+		{ TEXT("RunEQS"),   UBTTask_RunEQSQuery::StaticClass() },
+		// M5 native node library
+		{ TEXT("ComputeValue"), UBTForgeTask_ComputeValue::StaticClass() },
+		{ TEXT("Log"),          UBTForgeTask_LogMessage::StaticClass() },
+	};
+	return Types;
+}
+
+const TMap<FString, UClass*>& UBTForgeLibrary::GetAuxTypeAliases(const FString& Kind)
+{
+	if (Kind == TEXT("decorator"))
+	{
+		static const TMap<FString, UClass*> Decorators =
+		{
+			{ TEXT("Blackboard"),    UBTDecorator_Blackboard::StaticClass() },
+			// M5 native node library
+			{ TEXT("FloatCompare"),  UBTForgeDecorator_FloatCompare::StaticClass() },
+			{ TEXT("DistanceCheck"), UBTForgeDecorator_DistanceCheck::StaticClass() },
+			{ TEXT("Chance"),        UBTForgeDecorator_Chance::StaticClass() },
+		};
+		return Decorators;
+	}
+	static const TMap<FString, UClass*> Services =
+	{
+		{ TEXT("RunEQS"),         UBTService_RunEQS::StaticClass() },
+		// M5 native node library
+		{ TEXT("SetValue"),       UBTForgeService_SetBlackboardValue::StaticClass() },
+		{ TEXT("UpdateDistance"), UBTForgeService_UpdateDistance::StaticClass() },
+	};
+	return Services;
 }
 
 FString UBTForgeLibrary::CreateBehaviorTreeAsset(const FString& AssetPath, const FString& BlackboardJson)
