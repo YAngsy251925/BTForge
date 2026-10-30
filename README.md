@@ -185,6 +185,8 @@ python BTForge/Tools/mcp_m4_goldenpath.py --official
 python BTForge/Tools/mcp_m4_goldenpath.py --map /ShooterCore/Maps/L_ShooterGym --expect-movement 300
 python BTForge/Tools/mcp_m5_nodes.py             # M5 native node library (catalog -> specs -> 8 PIE runs)
 python BTForge/Tools/mcp_m5_nodes.py --official
+python BTForge/Tools/mcp_m6_bp.py                # M6 blueprint node generation (creation -> catalog -> PIE)
+python BTForge/Tools/mcp_m6_bp.py --official
 ```
 
 ---
@@ -273,6 +275,25 @@ Engine-native nodes (the engine's own `Set-key` tasks on 5.6+ take key-bound
 values via `{"Value": {"Key": "SomeKey"}}`) and Blueprint node classes appear in
 the same catalog and mix freely with these aliases.
 
+### Blueprint node generation (M6)
+
+`create_node_blueprint` generates a data-only Blueprint node asset from a spec:
+a compiled `/Game/..._C` class derived from a BT node base class, with
+per-project defaults on the class CDO — no Blueprint authoring, no event graph.
+The BTForge node classes are `Blueprintable`, so they are natural parents:
+
+```json
+{"AssetPath": "/Game/AI/BTA_LogShot",
+ "ParentClassPath": "/Script/BTForgeRuntime.BTForgeTask_LogMessage",
+ "ParamsJson": "{\"Message\":\"shot fired\",\"Severity\":\"Warning\"}"}
+```
+
+The returned `classPath` works as a node `type` in `build_behavior_tree`, the
+capability catalog lists the new class automatically, and PIE verification
+proves the defaults drive runtime behavior. Engine `*BlueprintBase` classes are
+also valid parents; engine-native BT classes are not `Blueprintable` and are
+rejected with an explanation.
+
 ---
 
 ## Development progress
@@ -291,15 +312,16 @@ the same catalog and mix freely with these aliases.
 | **M3 — runtime verification** | ✅ 2026-10-29 | In-process PIE: `StartTree(SingleRun/Looped)` + execution timeline sampling; EQS instant query with result assertions; two-call async protocol; 2.2.1 hardens `pass` aggregation, PIE start semantics, EQS valid-item counting and the pawn fixture |
 | **M4 — golden path E2E** | ✅ 2026-10-30 | `inspect_references` (reference / content-domain policy, asset + spec mode), `pawnDisplacement` + `expectedMinPawnDisplacement`, `Tools/mcp_m4_goldenpath.py`: catalog → spec → asset → references → PIE, with a broken-build → repair loop and an opt-in nav-meshed movement phase. 11 tools |
 | **M5 — native node library** | ✅ 2026-10-30 | 7 parameterized native service/decorator/task classes in `BTForgeRuntime` (ComputeValue, Log, SetValue, UpdateDistance, FloatCompare, DistanceCheck, Chance) + spec aliases exported as the catalog's authoritative tables; `Tools/mcp_m5_nodes.py` verifies every behavior in PIE. 11 tools |
-| M6 — Blueprint node generation | ⏳ planned | Start with data-only Blueprint subclasses (CDO overrides), then constrained event-graph recipes |
+| **M6 — Blueprint node generation (part 1)** | ✅ 2026-10-30 | `create_node_blueprint`: data-only Blueprint node assets (compiled `_C` class + CDO defaults, no event graph), precise parent validation, catalog auto-listing, PIE-verified CDO behavior; `Tools/mcp_m6_bp.py`. 12 tools |
+| M6 — Blueprint node generation (part 2) | ⏳ planned | Constrained event-graph recipes |
 
 ### Verification matrix (current release)
 
 | Environment | Result |
 |---|---|
-| UE 5.8, built-in server (`:8090`) | BT core suite PASS; M1/M2 suite **35/35 PASS**; M3 runtime suite **35/35 PASS**; M4 golden path **PASS** (22 checks, 29 with movement); M5 node-library suite **PASS** (8 PIE behavior runs) |
-| UE 5.8, official MCP server (`:8000`) | M1/M2 suite **35/35 PASS**; M3 runtime suite **35/35 PASS**; M4 golden path **PASS**; M5 node-library suite **PASS**; 11 tools registered in the official toolset |
-| UE 5.5, blank project | compiles with zero source changes; M1/M2 suite **35/35 PASS**; M3 runtime suite **35/35 PASS**; M4 golden path **PASS**; M5 node-library suite **PASS** |
+| UE 5.8, built-in server (`:8090`) | BT core suite PASS; M1/M2 suite **35/35 PASS**; M3 runtime suite **35/35 PASS**; M4 golden path **PASS** (22 checks, 29 with movement); M5 node-library suite **PASS** (8 PIE behavior runs); M6 blueprint-generation suite **PASS** (2 PIE runs) |
+| UE 5.8, official MCP server (`:8000`) | M1/M2 suite **35/35 PASS**; M3 runtime suite **35/35 PASS**; M4 golden path **PASS**; M5 + M6 suites **PASS**; 12 tools registered in the official toolset |
+| UE 5.5, blank project | compiles with zero source changes; M1/M2 suite **35/35 PASS**; M3 runtime suite **35/35 PASS**; M4 golden path **PASS**; M5 + M6 suites **PASS** |
 | UE 5.4 / 5.6 / 5.7 | not yet tested (APIs chosen for stability; no version conditionals) |
 
 ---

@@ -1,5 +1,6 @@
 #include "BTForgeToolset.h"
 
+#include "BTForgeBlueprintLibrary.h"
 #include "BTForgeCatalogLibrary.h"
 #include "BTForgeEQSLibrary.h"
 #include "BTForgeLibrary.h"
@@ -59,4 +60,9 @@ FString UBTForgeToolset::GetVerifyResult(const FString& SessionId)
 FString UBTForgeToolset::InspectReferences(const FString& RequestJson)
 {
 	return UBTForgeReferenceLibrary::InspectReferences(RequestJson);
+}
+
+FString UBTForgeToolset::CreateNodeBlueprint(const FString& AssetPath, const FString& ParentClassPath, const FString& ParamsJson)
+{
+	return UBTForgeBlueprintLibrary::CreateNodeBlueprint(AssetPath, ParentClassPath, ParamsJson);
 }

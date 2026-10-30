@@ -55,7 +55,7 @@ enum class EBTForgeArithmeticOperation : uint8
  * be Float (exact) or Int (rounded). Division by zero and missing/unreadable
  * keys fail the task with a warning in LogBTForge.
  */
-UCLASS(DisplayName = "BT Forge: Compute Value")
+UCLASS(Blueprintable, DisplayName = "BT Forge: Compute Value")
 class BTFORGERUNTIME_API UBTForgeTask_ComputeValue : public UBTTaskNode
 {
 	GENERATED_BODY()
@@ -103,7 +103,7 @@ enum class EBTForgeLogSeverity : uint8
  * checkpoint: verification can assert the message was logged (or, with
  * Severity=Error, deliberately prove that a broken tree fails no_log_errors).
  */
-UCLASS(DisplayName = "BT Forge: Log Message")
+UCLASS(Blueprintable, DisplayName = "BT Forge: Log Message")
 class BTFORGERUNTIME_API UBTForgeTask_LogMessage : public UBTTaskNode
 {
 	GENERATED_BODY()
@@ -139,7 +139,7 @@ protected:
  * periodic counterpart of the engine's one-shot Set-key tasks, usable as a
  * background knowledge updater (e.g. re-stamping a "branch entered" marker).
  */
-UCLASS(DisplayName = "BT Forge: Set Blackboard Value (periodic)")
+UCLASS(Blueprintable, DisplayName = "BT Forge: Set Blackboard Value (periodic)")
 class BTFORGERUNTIME_API UBTForgeService_SetBlackboardValue : public UBTService
 {
 	GENERATED_BODY()
@@ -188,7 +188,7 @@ protected:
  * "distance to target" key fresh and let FloatCompare/DistanceCheck
  * decorators gate branches on it.
  */
-UCLASS(DisplayName = "BT Forge: Update Distance (periodic)")
+UCLASS(Blueprintable, DisplayName = "BT Forge: Update Distance (periodic)")
 class BTFORGERUNTIME_API UBTForgeService_UpdateDistance : public UBTService
 {
 	GENERATED_BODY()
@@ -236,7 +236,7 @@ enum class EBTForgeFloatComparison : uint8
  * Float or Int. Observes the involved keys and aborts the underlying branch
  * when the result flips.
  */
-UCLASS(DisplayName = "BT Forge: Float Compare")
+UCLASS(Blueprintable, DisplayName = "BT Forge: Float Compare")
 class BTFORGERUNTIME_API UBTForgeDecorator_FloatCompare : public UBTDecorator
 {
 	GENERATED_BODY()
@@ -278,7 +278,7 @@ protected:
  * bounds disabled the condition fails closed (a range check that checks
  * nothing should not gate a branch). Observes both keys.
  */
-UCLASS(DisplayName = "BT Forge: Distance Check")
+UCLASS(Blueprintable, DisplayName = "BT Forge: Distance Check")
 class BTFORGERUNTIME_API UBTForgeDecorator_DistanceCheck : public UBTDecorator
 {
 	GENERATED_BODY()
@@ -316,7 +316,7 @@ protected:
  * Useful to keep a selector from always choosing the same branch. Probability
  * >= 100 always passes, <= 0 never does (exact at the boundaries).
  */
-UCLASS(DisplayName = "BT Forge: Chance")
+UCLASS(Blueprintable, DisplayName = "BT Forge: Chance")
 class BTFORGERUNTIME_API UBTForgeDecorator_Chance : public UBTDecorator
 {
 	GENERATED_BODY()

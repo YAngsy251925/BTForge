@@ -264,6 +264,18 @@ python BTForge/Tools/mcp_m5_nodes.py          # M5 原生节点库（catalog →
 
 引擎自带节点（5.6+ 的 Set-key 任务家族支持键绑定写法 `{"Value": {"Key": "SomeKey"}}`）与蓝图节点类出现在同一个目录里，可与这些别名自由混用。
 
+### 蓝图节点生成（M6）
+
+`create_node_blueprint` 按规格生成**数据-only 的蓝图节点资产**：一个派生自 BT 节点基类的、已编译的 `/Game/..._C` 类，项目级默认值写在类 CDO 上——不写蓝图、不生成事件图。BTForge 节点类都标了 `Blueprintable`，天然适合做父类：
+
+```json
+{"AssetPath": "/Game/AI/BTA_LogShot",
+ "ParentClassPath": "/Script/BTForgeRuntime.BTForgeTask_LogMessage",
+ "ParamsJson": "{\"Message\":\"shot fired\",\"Severity\":\"Warning\"}"}
+```
+
+返回的 `classPath` 可直接作为 `build_behavior_tree` 的节点 `type`，能力目录自动收录新类，PIE 验证证明 CDO 默认值真实驱动运行时行为。引擎的 `*BlueprintBase` 也是合法父类；引擎原生 BT 类不可 `Blueprintable`，会被拒绝并给出解释。
+
 ---
 
 ## 开发进度
@@ -282,15 +294,16 @@ python BTForge/Tools/mcp_m5_nodes.py          # M5 原生节点库（catalog →
 | **M3 — 运行层验证** | ✅ 2026-10-29 | 进程内 PIE：`StartTree(SingleRun/Looped)` + 执行时间线采样；EQS instant query 断言；两段式异步协议；2.2.1 补齐 `pass` 聚合、PIE 启动语义、EQS 有效项计数、夹具 Pawn 等修复 |
 | **M4 — 黄金路径端到端** | ✅ 2026-10-30 | `inspect_references`（引用/内容域策略，资产+规格两种模式）、`pawnDisplacement`/`expectedMinPawnDisplacement`、`Tools/mcp_m4_goldenpath.py`：catalog → 规格 → 资产 → 引用 → PIE，含坏规格→修复回路与可选导航图运动相位；工具 11 个 |
 | **M5 — 原生节点库** | ✅ 2026-10-30 | `BTForgeRuntime` 内 7 个参数化原生 service/decorator/task（ComputeValue、Log、SetValue、UpdateDistance、FloatCompare、DistanceCheck、Chance）+ 规格别名（别名表即 catalog 权威源）；`Tools/mcp_m5_nodes.py` 在 PIE 里逐行为验证；工具 11 个 |
-| M6 — 蓝图节点生成 | ⏳ 规划 | 先做"数据-only 蓝图子类"（改 CDO），再做受限事件图配方 |
+| **M6 — 蓝图节点生成（上半）** | ✅ 2026-10-30 | `create_node_blueprint`：数据-only 蓝图节点资产（编译出的 `_C` 类 + CDO 默认值，无事件图）、精确的父类校验、catalog 自动收录、PIE 验证 CDO 行为；`Tools/mcp_m6_bp.py`；工具 12 个 |
+| M6 — 蓝图节点生成（下半） | ⏳ 规划 | 受限事件图配方 |
 
-### 当前版本验证矩阵（v2.4.0）
+### 当前版本验证矩阵（v2.5.0）
 
 | 环境 | 结果 |
 |---|---|
-| UE 5.8，自研 server（`:8090`） | BT 基础套件 PASS；M1/M2 套件 **35/35 PASS**；M3 运行套件 **35/35 PASS**；M4 黄金路径 **PASS**（22 项；含导航图运动相位 29 项）；M5 节点库套件 **PASS**（8 个 PIE 行为 run） |
-| UE 5.8，官方 MCP server（`:8000`） | M1/M2 套件 **35/35 PASS**；M3 运行套件 **35/35 PASS**；M4 黄金路径 **PASS**；M5 节点库套件 **PASS**；11 个工具在官方 toolset 中注册成功 |
-| UE 5.5，空白工程 | 零源码改动编译通过；M1/M2 套件 **35/35 PASS**；M3 运行套件 **35/35 PASS**；M4 黄金路径 **PASS**；M5 节点库套件 **PASS** |
+| UE 5.8，自研 server（`:8090`） | BT 基础套件 PASS；M1/M2 套件 **35/35 PASS**；M3 运行套件 **35/35 PASS**；M4 黄金路径 **PASS**；M5 节点库套件 **PASS**；M6 蓝图生成套件 **PASS** |
+| UE 5.8，官方 MCP server（`:8000`） | M1/M2 套件 **35/35 PASS**；M3 运行套件 **35/35 PASS**；M4 黄金路径 **PASS**；M5 + M6 套件 **PASS**；12 个工具在官方 toolset 中注册成功 |
+| UE 5.5，空白工程 | 零源码改动编译通过；M1/M2 套件 **35/35 PASS**；M3 运行套件 **35/35 PASS**；M4 黄金路径 **PASS**；M5 + M6 套件 **PASS** |
 | UE 5.4 / 5.6 / 5.7 | 未实测（API 按稳定性选型、无版本条件编译） |
 
 ---
@@ -299,7 +312,7 @@ python BTForge/Tools/mcp_m5_nodes.py          # M5 原生节点库（catalog →
 
 - **EQS context 是按类引用**（`TSubclassOf<UEnvQueryContext>`）。要给原生 context 按 query 配置参数（如 `BlackboardKey`），需要带类默认值的蓝图子类；计划作为 M6 的第一步。
 - **EQS 参数数组暂不可写**（如 `Composite` generator 的子 generator）；非空数组会被明确拒绝。
-- **蓝图节点类可用但还不能创建**：`build_behavior_tree` 可实例化已有 `_C` 类（L3.5）；生成 BTS 蓝图资产属于 M6。
+- **蓝图节点类可用但还不能创建**→ **M6 上半已实现**：`create_node_blueprint` 生成数据-only 蓝图节点（CDO 默认值）；受限事件图配方属于 M6 下半。
 - **运行层验证的边界**（M3 已实现）：`start_verify` 需要一个开着编辑器的进程，且一次只跑一个会话；已有 PIE/SIE 在运行时会被拒绝（BTForge 只关自己开的会话）。`bareGameMode` 下没给 `mapPath` 会退到引擎模板图（项目图如 Lyra 在裸 GameMode 下会断言）。`fixturePawn` 默认给一个 `ADefaultPawn`，但导航类任务仍需目标图带 NavMesh（否则 `MoveTo` 只会报"0 items/failed to find path"）。EQS 验证是同步一次性 step 循环，不覆盖异步 generator。
 - **引用策略的判定边界**（M4 已实现）：`inspect_references` 对引擎内置模块用一份**明示的编辑器模块清单**判定（内置模块没有运行时可读的宿主类型），插件模块则读 uplugin 描述符（`Type=Editor` / `TargetAllowList` 不含 `Game`）；另外用 cooker 自己的 `IsEditorOnlyObject` 兜底。`/Engine` 内容只给 `warn`（能否进 cook 取决于引用链），不是错误。
 - **项目图上的 pass 可能被项目自身日志拖成 false**：`no_log_errors` 会把 PIE 期间项目 GameFeature/蓝图报的错误算进来（实测 Lyra 的 GCNL_Spawning 脚本错误）。M4 黄金路径因此在项目图上只断言"运动证据"（`pawn_moved`），并把项目噪声如实报告出来，而不是过滤掉。

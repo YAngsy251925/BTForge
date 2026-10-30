@@ -99,6 +99,22 @@ public:
 	static FString InspectBehaviorTree(const FString& AssetPath);
 
 	/**
+	 * Apply spec-style params ({name: value, ...}) to any object through the
+	 * same reflection writers build_behavior_tree uses (enums by name, class
+	 * paths, nested structs, arrays). Blackboard key names are accepted without
+	 * tree validation: this entry point is for objects that exist outside a
+	 * tree (e.g. a blueprint node class CDO); tree-time resolution still runs
+	 * when the node is placed.
+	 *
+	 * @param Target        Object to write onto (its CDO for blueprint defaults).
+	 * @param ParamsJson    {"ParamName": value, ...}.
+	 * @param OutAppliedCount Number of top-level params written.
+	 * @param OutError      First failure with the param path.
+	 * @return true when every param applied.
+	 */
+	static bool ApplyParamsToObject(UObject* Target, const FString& ParamsJson, int32& OutAppliedCount, FString& OutError);
+
+	/**
 	 * Spec aliases for tree node "type" values, authoritative for both the
 	 * spec parser and the capability catalog: "Sequence"/"Selector"/"Wait"/
 	 * "MoveTo"/"RunEQS" plus the M5 native library aliases "ComputeValue"/"Log".

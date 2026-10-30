@@ -1,6 +1,7 @@
 #include "BTForgeMcpServer.h"
 
 #include "Async/Async.h"
+#include "BTForgeBlueprintLibrary.h"
 #include "BTForgeCatalogLibrary.h"
 #include "BTForgeEQSLibrary.h"
 #include "BTForgeReferenceLibrary.h"
@@ -166,6 +167,11 @@ namespace
 				TEXT("Reference / content-domain policy (M4), read-only. Reports every object reference of a BT or EQS asset (or of a spec, before anything is written) with its domain (native module / project content / plugin content / engine content), module, plugin, blueprint flag, and whether it can exist in a cooked build. Returns verdict ok|warn|fail plus errors[]/warnings[] with JSON paths. Use it after build_* and before shipping, or on a spec to catch missing / editor-only references early. RequestJson: {\"assetPath\":\"/Game/AI/BT_X\"} for an existing asset, or {\"kind\":\"bt\",\"treeJson\":{...},\"blackboardJson\":{...}} / {\"kind\":\"eqs\",\"queryJson\":{...}} for a spec."),
 				TEXT(R"json({"type":"object","properties":{"RequestJson":{"type":["object","string"],"description":"{\"assetPath\":\"...\"} or {\"kind\":\"bt\",\"treeJson\":{...}} or {\"kind\":\"eqs\",\"queryJson\":{...}}"}},"required":["RequestJson"]})json")
 			},
+			{
+				TEXT("create_node_blueprint"),
+				TEXT("Blueprint node generation (M6): create a data-only Blueprint node asset - a generated class derived from a BT node base class (UBTTaskNode/UBTService/UBTDecorator, no Blueprint composites) with ParamsJson written onto the class CDO through the same reflection writers build_behavior_tree uses. No event-graph logic is generated. The returned classPath plugs straight into build_behavior_tree as a node 'type', and the capability catalog lists the new class automatically. Fails if the asset exists; nothing is kept on failure. Blackboard key names in params resolve per-tree when the node is placed."),
+				TEXT(R"json({"type":"object","properties":{"AssetPath":{"type":"string","description":"Target blueprint asset path, e.g. /Game/AI/BTA_LogShot."},"ParentClassPath":{"type":"string","description":"Class path of a non-abstract UBTTaskNode/UBTService/UBTDecorator-derived class, e.g. /Script/BTForgeRuntime.BTForgeTask_LogMessage or an existing /Game/..._C."},"ParamsJson":{"type":["object","string"],"description":"{\"PropertyName\": value, ...} applied to the class defaults, e.g. {\"Message\":\"shot fired\",\"Severity\":\"Warning\"}. Optional (empty = engine defaults)."}},"required":["AssetPath","ParentClassPath"]})json")
+			},
 		};
 		return Tools;
 	}
@@ -294,6 +300,19 @@ namespace
 			bOutIsToolError = false;
 			return UBTForgeReferenceLibrary::InspectReferences(RequestJson);
 		}
+		else if (ToolName == TEXT("create_node_blueprint"))
+		{
+			FString ParentClassPath;
+			FString ParamsJson;
+			if (bHasAssetPath && Args->TryGetStringField(TEXT("ParentClassPath"), ParentClassPath))
+			{
+				if (Args->HasField(TEXT("ParamsJson")))
+				{
+					GetToolArgAsJsonText(Args, TEXT("ParamsJson"), ParamsJson, ArgError);
+				}
+				LibraryResult = UBTForgeBlueprintLibrary::CreateNodeBlueprint(AssetPath, ParentClassPath, ParamsJson);
+			}
+		}
 		else if (ToolName == TEXT("start_verify") || ToolName == TEXT("get_verify_result"))
 		{
 			// M3 runtime verification. Includes UE 5.5 in the description because
@@ -364,7 +383,7 @@ namespace
 
 		TSharedRef<FJsonObject> ServerInfo = MakeShared<FJsonObject>();
 		ServerInfo->SetStringField(TEXT("name"), TEXT("BTForge"));
-		ServerInfo->SetStringField(TEXT("version"), TEXT("2.4.0"));
+		ServerInfo->SetStringField(TEXT("version"), TEXT("2.5.0"));
 
 		TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
 		Result->SetStringField(TEXT("protocolVersion"), Negotiated);

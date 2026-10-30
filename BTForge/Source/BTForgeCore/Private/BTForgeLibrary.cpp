@@ -233,9 +233,9 @@ namespace
 		return Names.Num() ? FString::Join(Names, TEXT(", ")) : TEXT("(none)");
 	}
 
-	bool ApplyParamsToContainer(UStruct* Struct, void* DataPtr, const TSharedPtr<FJsonObject>& Params, const TSet<FName>& KnownBlackboardKeys, const FString& Path, FString& OutError);
+	bool ApplyParamsToContainer(UStruct* Struct, void* DataPtr, const TSharedPtr<FJsonObject>& Params, const TSet<FName>* KnownBlackboardKeys, const FString& Path, FString& OutError);
 
-	bool WriteValueToProperty(FProperty* Property, void* DataPtr, const TSharedPtr<FJsonValue>& Value, const TSet<FName>& KnownBlackboardKeys, const FString& ParamPath, FString& OutError)
+	bool WriteValueToProperty(FProperty* Property, void* DataPtr, const TSharedPtr<FJsonValue>& Value, const TSet<FName>* KnownBlackboardKeys, const FString& ParamPath, FString& OutError)
 	{
 		// Enum-typed properties first: FByteProperty is a numeric property, but
 		// it must also accept the enum value NAME (string), not only numbers.
@@ -360,10 +360,12 @@ namespace
 					OutError = TEXT("expected a blackboard key name (string)");
 					return false;
 				}
-				if (!KnownBlackboardKeys.Contains(FName(*KeyName)))
+				// KnownBlackboardKeys == nullptr means CDO-level params (blueprint node
+			// creation): there is no tree to validate against, accept the bare name.
+			if (KnownBlackboardKeys != nullptr && !KnownBlackboardKeys->Contains(FName(*KeyName)))
 				{
 					TArray<FString> Known;
-					for (const FName& Known2 : KnownBlackboardKeys)
+					for (const FName& Known2 : *KnownBlackboardKeys)
 					{
 						Known.Add(Known2.ToString());
 					}
@@ -451,7 +453,7 @@ namespace
 		return false;
 	}
 
-	bool ApplyParamsToContainer(UStruct* Struct, void* DataPtr, const TSharedPtr<FJsonObject>& Params, const TSet<FName>& KnownBlackboardKeys, const FString& Path, FString& OutError)
+	bool ApplyParamsToContainer(UStruct* Struct, void* DataPtr, const TSharedPtr<FJsonObject>& Params, const TSet<FName>* KnownBlackboardKeys, const FString& Path, FString& OutError)
 	{
 		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Params->Values)
 		{
@@ -514,7 +516,7 @@ namespace
 		const TSharedPtr<FJsonObject> Params = (*SpecObject)->HasField(TEXT("params"))
 			? (*SpecObject)->GetObjectField(TEXT("params"))
 			: MakeShared<FJsonObject>();
-		if (!ApplyParamsToContainer(AuxNode->GetClass(), AuxNode, Params, KnownBlackboardKeys, NodePath, OutError))
+		if (!ApplyParamsToContainer(AuxNode->GetClass(), AuxNode, Params, &KnownBlackboardKeys, NodePath, OutError))
 		{
 			return nullptr;
 		}
@@ -552,7 +554,7 @@ namespace
 		const TSharedPtr<FJsonObject> Params = NodeJson->HasField(TEXT("params"))
 			? NodeJson->GetObjectField(TEXT("params"))
 			: MakeShared<FJsonObject>();
-		if (!ApplyParamsToContainer(Node->GetClass(), Node, Params, KnownBlackboardKeys, NodePath, OutError))
+		if (!ApplyParamsToContainer(Node->GetClass(), Node, Params, &KnownBlackboardKeys, NodePath, OutError))
 		{
 			return nullptr;
 		}
@@ -904,6 +906,33 @@ namespace
 		}
 		return OutNode;
 	}
+}
+
+bool UBTForgeLibrary::ApplyParamsToObject(UObject* Target, const FString& ParamsJson, int32& OutAppliedCount, FString& OutError)
+{
+	OutAppliedCount = 0;
+	if (Target == nullptr)
+	{
+		OutError = TEXT("target object is null");
+		return false;
+	}
+	TSharedPtr<FJsonObject> Params;
+	{
+		const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ParamsJson);
+		if (!FJsonSerializer::Deserialize(Reader, Params) || !Params.IsValid())
+		{
+			OutError = TEXT("ParamsJson is not a valid JSON object, e.g. {\"Message\":\"hi\",\"Severity\":\"Warning\"}");
+			return false;
+		}
+	}
+	// nullptr = no tree blackboard to validate key selectors against (CDO-level
+	// defaults are tree-independent; a tree build re-validates on placement).
+	if (!ApplyParamsToContainer(Target->GetClass(), Target, Params, nullptr, TEXT("params"), OutError))
+	{
+		return false;
+	}
+	OutAppliedCount = Params->Values.Num();
+	return true;
 }
 
 const TMap<FString, UClass*>& UBTForgeLibrary::GetNodeTypeAliases()

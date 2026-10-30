@@ -3,6 +3,62 @@
 All notable changes to BT Forge are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.5.0] — 2026-10-30
+
+M6 (part 1): Blueprint node generation — the `create_node_blueprint` tool
+(12 MCP tools total) creates data-only Blueprint node assets: a compiled
+`/Game/..._C` class derived from a BT node base class, with per-project
+defaults written onto the class CDO and no event-graph logic. The roadmap's
+"constrained event-graph recipes" remain future work.
+
+### Added
+
+- **`create_node_blueprint`** (both endpoints): given an asset path, a
+  non-abstract `UBTTaskNode`/`UBTService`/`UBTDecorator`-derived parent class
+  path and a params JSON, it builds the Blueprint through
+  `UBlueprintFactory` + `FKismetEditorUtilities::CompileBlueprint`, applies the
+  params to the generated class CDO, saves, and returns the class path — which
+  plugs straight into `build_behavior_tree` as a node `type` (L3.5) and is
+  listed by `get_capability_catalog` automatically (AssetRegistry). Fails if
+  the asset exists; any failure deletes the half-created asset.
+  - Parent validation is precise: base-class domain check (no Blueprint
+    composites — they do not exist in the engine), abstract check, and
+    `FKismetEditorUtilities::CanCreateBlueprintOfClass` with an actionable
+    error (engine BT node bases are MinimalAPI-only and not Blueprintable —
+    derive from a BTForge node class or an engine `*BlueprintBase`).
+  - Params reuse the spec reflection writers (`UBTForgeLibrary::
+    ApplyParamsToObject`): enums by name, class paths, nested structs — now
+    exported for reuse. Blackboard key names are accepted without tree
+    validation (a CDO is tree-independent; the key resolves per-tree when the
+    node is placed).
+- **`Tools/mcp_m6_bp.py`**: creation, duplicate/bad-parent/unknown-param
+  rejections (plus the nothing-left-behind check), catalog listing/classification,
+  spec dry-run, and two PIE runs proving CDO defaults drive runtime behavior
+  (a BP task logs its configured message at its configured severity; a BP
+  service writes its configured key every tick).
+- The seven M5 node classes are now `Blueprintable` — they were designed as
+  extension points, and this is what lets `create_node_blueprint` derive from
+  them.
+
+### Verified
+
+- UE 5.8, built-in endpoint (`:8090`): M6 suite **PASS** (35 checks, 2 PIE
+  runs), M5 suite **PASS**, M3 suite **35/35**, M1/M2 suite **35/35**, base
+  suite PASS, M4 golden path **PASS**.
+- UE 5.8, official endpoint (`:8000`): M6 suite **PASS** (12 tools registered).
+- UE 5.5 blank project: compiles with **zero changes**; M6/M5/M3/M1/M2/base
+  suites and the M4 golden path all **PASS**.
+
+### Known limitations (M6 part 1 scope)
+
+- Data-only: no event-graph generation (roadmap part 2). A generated node runs
+  its parent class's behavior with the configured defaults.
+- Blueprint parents must be `Blueprintable`; engine-native BT node classes are
+  not (use an engine `*BlueprintBase` or a BTForge node class as parent).
+- The catalog still shows no parameter schema for Blueprint entries (CDO
+  loading per entry is deliberately avoided); `create_node_blueprint`'s result
+  echoes what was applied.
+
 ## [2.4.0] — 2026-10-30
 
 M5: a native parameterized node library shipped in `BTForgeRuntime` — common
