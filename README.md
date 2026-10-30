@@ -35,7 +35,7 @@ The agent stays a **planner and spec author**; the deterministic writer owns ass
 
 ## Features
 
-### Eleven MCP tools
+### Twelve MCP tools
 
 | Tool | Purpose |
 |---|---|
@@ -48,6 +48,7 @@ The agent stays a **planner and spec author**; the deterministic writer owns ass
 | `validate_eqs_spec` | Validate an EQS spec without creating assets |
 | `get_capability_catalog` | Inventory of available BT node classes, EQS assets/contexts, spec aliases and JSON parameter shapes |
 | `inspect_references` | Reference / content-domain policy: every reference's domain and whether it can survive a cook (asset or spec mode) |
+| `create_node_blueprint` | Creates a Blueprint node asset (compiled `_C` class + CDO defaults), optionally with a constrained `RecipeJson` event graph; the class path plugs straight into `build_behavior_tree` |
 | `start_verify` | Runtime verification: starts an in-process PIE session and actually runs a generated BT/EQS asset, sampling execution over time |
 | `get_verify_result` | Polls a verify session; returns machine-readable checks (started/running/finished-in-window/no-log-errors), execution timeline and final blackboard/EQS results |
 
@@ -338,20 +339,22 @@ synthesized graph executing end to end.
 
 | Environment | Result |
 |---|---|
-| UE 5.8, built-in server (`:8090`) | BT core suite PASS; M1/M2 suite **35/35 PASS**; M3 runtime suite **35/35 PASS**; M4 golden path **PASS** (22 checks, 29 with movement); M5 node-library suite **PASS** (8 PIE behavior runs); M6 blueprint-generation suite **PASS** (2 PIE runs) |
-| UE 5.8, official MCP server (`:8000`) | M1/M2 suite **35/35 PASS**; M3 runtime suite **35/35 PASS**; M4 golden path **PASS**; M5 + M6 suites **PASS**; 12 tools registered in the official toolset |
-| UE 5.5, blank project | compiles with zero source changes; M1/M2 suite **35/35 PASS**; M3 runtime suite **35/35 PASS**; M4 golden path **PASS**; M5 + M6 suites **PASS** || UE 5.4 / 5.6 / 5.7 | not yet tested (APIs chosen for stability; no version conditionals) |
+| UE 5.8, built-in server (`:8090`) | BT core suite PASS; M1/M2 suite **35/35 PASS**; M3 runtime suite **34/34 PASS**; M4 golden path **PASS** (22 checks, 29 with movement); M5 node-library suite **PASS** (8 PIE behavior runs); M6 blueprint-generation suite **PASS** (2 PIE runs) |
+| UE 5.8, official MCP server (`:8000`) | M1/M2 suite **35/35 PASS**; M3 runtime suite **34/34 PASS**; M4 golden path **PASS**; M5 + M6 suites **PASS**; 12 tools registered in the official toolset |
+| UE 5.5, blank project | compiles with zero source changes; M1/M2 suite **35/35 PASS**; M3 runtime suite **34/34 PASS**; M4 golden path **PASS**; M5 + M6 suites **PASS** |
+| UE 5.4 / 5.6 / 5.7 | not yet tested (APIs chosen for stability; no version conditionals) |
 
 ---
 
 ## Known limitations
 
-- **EQS contexts are class references** (`TSubclassOf<UEnvQueryContext>`). Per-query configuration of a native context (e.g. `BlackboardKey`) needs a Blueprint subclass carrying the class defaults. Planned as an M6 first step.
+- **EQS contexts are class references** (`TSubclassOf<UEnvQueryContext>`). Per-query configuration of a native context (e.g. `BlackboardKey`) needs a Blueprint subclass carrying the class defaults; that subclass generator is still future work (the M6 Blueprint generator only builds BT node assets).
 - **EQS parameter arrays are not writable yet** (e.g. `Composite` generator's child generators); non-empty arrays are rejected with a clear error.
-- **Blueprint node classes can be used but not created yet** — `build_behavior_tree` instantiates existing `_C` classes (L3.5); generating BTS Blueprint assets is M6.
-- **Reference policy scope** (M4): built-in engine modules are classified from a documented editor-module list (they expose no runtime-readable host type); plugin modules use their descriptors, and `IsEditorOnlyObject` backs both up. `/Engine` content is reported as a warning, not an error.
+- **Blueprint node classes are created, not authored** — `create_node_blueprint` produces data-only nodes plus the constrained `call_function` recipe; free-form event graphs (constant arguments, decorator condition graphs, project-class casts) are future work.
+- **Reference policy scope** (M4): built-in engine modules are classified from a documented editor-module list (they expose no runtime-readable host type); plugin *and project* modules use their descriptors, and `IsEditorOnlyObject` backs both up. `/Engine` content is reported as a warning, not an error. Reference lists are capped at 600 entries per scan — the report now flags `summary.truncated` and downgrades the verdict instead of silently stopping.
 - **`pass` on a project map can be false from the project's own log errors** (`no_log_errors` counts everything logged during PIE, e.g. Lyra's GameplayCue script errors). The M4 golden path therefore asserts movement evidence on a project map and reports that noise instead of hiding it.
-- **`inspect_behavior_tree` still reports scalar params only**; object references inside structs (e.g. `EQSRequest.QueryTemplate`) are reported by `inspect_references` with exact JSON paths.- **Runtime verification has boundaries** (M3): `start_verify` needs the editor process and runs one session at a time - it refuses to start while another PIE/SIE session is running and only ever stops sessions it started. With `bareGameMode` and no `mapPath` it falls back to the engine template map (project maps such as Lyra assert on a bare GameMode). The fixture spawns an `ADefaultPawn` by default (`fixturePawn`), but navigation tasks still need a NavMesh in the target map. The EQS path is a single synchronous step loop, so asynchronous generators are not exercised.
+- **`inspect_behavior_tree` still reports scalar params only**; object references inside structs (e.g. `EQSRequest.QueryTemplate`) are reported by `inspect_references` with exact JSON paths.
+- **Runtime verification has boundaries** (M3): `start_verify` needs the editor process and runs one session at a time - it refuses to start while another PIE/SIE session is running and only ever stops sessions it started. With `bareGameMode` and no `mapPath` it falls back to the engine template map (project maps such as Lyra assert on a bare GameMode). The fixture spawns an `ADefaultPawn` by default (`fixturePawn`), but navigation tasks still need a NavMesh in the target map. The EQS path is a single synchronous step loop, so asynchronous generators are not exercised.
 - **Blueprint node entries in the catalog have no parameter schema** (only native classes do), to avoid loading every Blueprint CDO.
 - **Unmounted GameFeature/plugin content may be missing from the catalog** (AssetRegistry sees mounted content; the tool reports a note about this).
 - **5.4/5.6/5.7 are untested.** Only 5.5 and 5.8 were available on the development machine.

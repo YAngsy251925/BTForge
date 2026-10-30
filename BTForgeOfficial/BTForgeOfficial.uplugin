@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
-	"Version": 3,
-	"VersionName": "2.6.0",
+	"Version": 4,
+	"VersionName": "2.6.1",
 	"FriendlyName": "BT Forge Official MCP Bridge",
 	"Description": "UE 5.8+ only. Exposes the BTForge tools through Epic's ModelContextProtocol server (ToolsetRegistry) so they appear alongside the official toolsets on port 8000. Not needed on engines before 5.8 - the BTForge plugin ships its own MCP server.",
 	"Category": "AI",

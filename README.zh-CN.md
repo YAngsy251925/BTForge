@@ -35,7 +35,7 @@ Agent 负责**规划与写规格**；确定性写入器负责**建资产**；校
 
 ## 功能
 
-### 11 个 MCP 工具
+### 12 个 MCP 工具
 
 | 工具 | 作用 |
 |---|---|
@@ -48,6 +48,7 @@ Agent 负责**规划与写规格**；确定性写入器负责**建资产**；校
 | `validate_eqs_spec` | 空跑校验 EQS 规格，不创建资产 |
 | `get_capability_catalog` | 可用 BT 节点类、EQS 资产/context、规格别名与参数 JSON 形状清单 |
 | `inspect_references` | 引用/内容域策略：每个引用的域与能否进 cook（资产模式与规格模式） |
+| `create_node_blueprint` | 生成蓝图节点资产（编译出的 `_C` 类 + CDO 默认值），可选 `RecipeJson` 合成受限事件图；返回的类路径可直接作为 `build_behavior_tree` 的节点 `type` |
 | `start_verify` | 运行层验证：起一个 PIE 会话，真正跑一遍生成的 BT/EQS 资产 |
 | `get_verify_result` | 轮询该会话：`pass` + `checks[]` + 执行时间线 + 终态 |
 
@@ -308,24 +309,24 @@ python BTForge/Tools/mcp_m5_nodes.py          # M5 原生节点库（catalog →
 | **M6 — 蓝图节点生成（下半）** | ✅ 2026-10-30 | 受限事件图配方：`RecipeJson` 在 `create_node_blueprint` 里合成固定形状的 K2 图（AI 事件 → 控制器/pawn 上零参函数调用 → 任务自动收尾），创建期校验、PIE 端到端验证 |
 | 蓝图配方 — 扩展面 | ⏳ 规划 | 常量参数连线、装饰器条件图（函数返回值）、项目类 Cast |
 
-### 当前版本验证矩阵（v2.6.0）
+### 当前版本验证矩阵（v2.6.1）
 
 | 环境 | 结果 |
 |---|---|
-| UE 5.8，自研 server（`:8090`） | BT 基础套件 PASS；M1/M2 套件 **35/35 PASS**；M3 运行套件 **35/35 PASS**；M4 黄金路径 **PASS**；M5 节点库套件 **PASS**；M6 蓝图生成套件 **PASS** |
-| UE 5.8，官方 MCP server（`:8000`） | M1/M2 套件 **35/35 PASS**；M3 运行套件 **35/35 PASS**；M4 黄金路径 **PASS**；M5 + M6 套件 **PASS**；12 个工具在官方 toolset 中注册成功 |
-| UE 5.5，空白工程 | 零源码改动编译通过；M1/M2 套件 **35/35 PASS**；M3 运行套件 **35/35 PASS**；M4 黄金路径 **PASS**；M5 + M6 套件 **PASS** |
+| UE 5.8，自研 server（`:8090`） | BT 基础套件 PASS；M1/M2 套件 **35/35 PASS**；M3 运行套件 **34/34 PASS**；M4 黄金路径 **PASS**；M5 节点库套件 **PASS**；M6 蓝图生成套件 **PASS** |
+| UE 5.8，官方 MCP server（`:8000`） | M1/M2 套件 **35/35 PASS**；M3 运行套件 **34/34 PASS**；M4 黄金路径 **PASS**；M5 + M6 套件 **PASS**；12 个工具在官方 toolset 中注册成功 |
+| UE 5.5，空白工程 | 零源码改动编译通过；M1/M2 套件 **35/35 PASS**；M3 运行套件 **34/34 PASS**；M4 黄金路径 **PASS**；M5 + M6 套件 **PASS** |
 | UE 5.4 / 5.6 / 5.7 | 未实测（API 按稳定性选型、无版本条件编译） |
 
 ---
 
 ## 已知限制
 
-- **EQS context 是按类引用**（`TSubclassOf<UEnvQueryContext>`）。要给原生 context 按 query 配置参数（如 `BlackboardKey`），需要带类默认值的蓝图子类；计划作为 M6 的第一步。
+- **EQS context 是按类引用**（`TSubclassOf<UEnvQueryContext>`）。要给原生 context 按 query 配置参数（如 `BlackboardKey`），需要带类默认值的蓝图子类；该子类生成器仍是后续工作（M6 的蓝图生成只覆盖 BT 节点资产）。
 - **EQS 参数数组暂不可写**（如 `Composite` generator 的子 generator）；非空数组会被明确拒绝。
-- **蓝图节点类可用但还不能创建**→ **M6 上半已实现**：`create_node_blueprint` 生成数据-only 蓝图节点（CDO 默认值）；受限事件图配方属于 M6 下半。
+- **蓝图节点类能创建、但配方面很窄**：`create_node_blueprint` 生成数据-only 节点 + `call_function` 受限配方；自由事件图（常量参数连线、装饰器条件图、项目类 Cast）仍属后续工作。
 - **运行层验证的边界**（M3 已实现）：`start_verify` 需要一个开着编辑器的进程，且一次只跑一个会话；已有 PIE/SIE 在运行时会被拒绝（BTForge 只关自己开的会话）。`bareGameMode` 下没给 `mapPath` 会退到引擎模板图（项目图如 Lyra 在裸 GameMode 下会断言）。`fixturePawn` 默认给一个 `ADefaultPawn`，但导航类任务仍需目标图带 NavMesh（否则 `MoveTo` 只会报"0 items/failed to find path"）。EQS 验证是同步一次性 step 循环，不覆盖异步 generator。
-- **引用策略的判定边界**（M4 已实现）：`inspect_references` 对引擎内置模块用一份**明示的编辑器模块清单**判定（内置模块没有运行时可读的宿主类型），插件模块则读 uplugin 描述符（`Type=Editor` / `TargetAllowList` 不含 `Game`）；另外用 cooker 自己的 `IsEditorOnlyObject` 兜底。`/Engine` 内容只给 `warn`（能否进 cook 取决于引用链），不是错误。
+- **引用策略的判定边界**（M4 已实现）：`inspect_references` 对引擎内置模块用一份**明示的编辑器模块清单**判定（内置模块没有运行时可读的宿主类型），插件模块与**项目模块**则读各自的描述符（`Type=Editor` / `TargetAllowList` 不含 `Game`）；另外用 cooker 自己的 `IsEditorOnlyObject` 兜底。`/Engine` 内容只给 `warn`。单次扫描上限 600 条——超出时报告 `summary.truncated` 并把 verdict 降级，不再静默截断。
 - **项目图上的 pass 可能被项目自身日志拖成 false**：`no_log_errors` 会把 PIE 期间项目 GameFeature/蓝图报的错误算进来（实测 Lyra 的 GCNL_Spawning 脚本错误）。M4 黄金路径因此在项目图上只断言"运动证据"（`pawn_moved`），并把项目噪声如实报告出来，而不是过滤掉。
 - **`inspect_behavior_tree` 只回标量参数**：结构体里的对象引用（如 `EQSRequest.QueryTemplate`）由 `inspect_references` 以精确 JSON 路径报告。
 - **引擎 Set-key 任务家族是 5.6+ 才有的**：冒烟套件不能无条件引用它（M5 套件先探 catalog、没有就跳过对应 interop 控制项）。

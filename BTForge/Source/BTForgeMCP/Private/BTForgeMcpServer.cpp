@@ -251,7 +251,12 @@ namespace
 				FString BlackboardJson;
 				if (Args.IsValid() && Args->HasField(TEXT("BlackboardJson")))
 				{
-					GetToolArgAsJsonText(Args, TEXT("BlackboardJson"), BlackboardJson, ArgError);
+					// A malformed BlackboardJson must not fall back to "no keys": that would
+					// validate a different spec than the caller wrote and still report ok.
+					if (!GetToolArgAsJsonText(Args, TEXT("BlackboardJson"), BlackboardJson, ArgError))
+					{
+						return MakeToolErrorText(ArgError);
+					}
 				}
 				LibraryResult = UBTForgeLibrary::ValidateBehaviorTree(TreeJson, BlackboardJson);
 			}
@@ -284,7 +289,10 @@ namespace
 			FString SectionJson;
 			if (Args.IsValid() && Args->HasField(TEXT("SectionJson")))
 			{
-				GetToolArgAsJsonText(Args, TEXT("SectionJson"), SectionJson, ArgError);
+				if (!GetToolArgAsJsonText(Args, TEXT("SectionJson"), SectionJson, ArgError))
+				{
+					return MakeToolErrorText(ArgError);
+				}
 			}
 			LibraryResult = UBTForgeCatalogLibrary::GetCapabilityCatalog(SectionJson);
 		}
@@ -309,11 +317,19 @@ namespace
 			{
 				if (Args->HasField(TEXT("ParamsJson")))
 				{
-					GetToolArgAsJsonText(Args, TEXT("ParamsJson"), ParamsJson, ArgError);
+					// Dropping a malformed ParamsJson would create a blueprint with engine
+					// defaults and report ok:true - the caller's spec never reached the CDO.
+					if (!GetToolArgAsJsonText(Args, TEXT("ParamsJson"), ParamsJson, ArgError))
+					{
+						return MakeToolErrorText(ArgError);
+					}
 				}
 				if (Args->HasField(TEXT("RecipeJson")))
 				{
-					GetToolArgAsJsonText(Args, TEXT("RecipeJson"), RecipeJson, ArgError);
+					if (!GetToolArgAsJsonText(Args, TEXT("RecipeJson"), RecipeJson, ArgError))
+					{
+						return MakeToolErrorText(ArgError);
+					}
 				}
 				LibraryResult = UBTForgeBlueprintLibrary::CreateNodeBlueprint(AssetPath, ParentClassPath, ParamsJson, RecipeJson);
 			}
@@ -388,7 +404,7 @@ namespace
 
 		TSharedRef<FJsonObject> ServerInfo = MakeShared<FJsonObject>();
 		ServerInfo->SetStringField(TEXT("name"), TEXT("BTForge"));
-		ServerInfo->SetStringField(TEXT("version"), TEXT("2.6.0"));
+		ServerInfo->SetStringField(TEXT("version"), TEXT("2.6.1"));
 
 		TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
 		Result->SetStringField(TEXT("protocolVersion"), Negotiated);

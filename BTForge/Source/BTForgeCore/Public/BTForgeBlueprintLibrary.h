@@ -48,9 +48,13 @@ public:
 	 * placed into a behavior tree.
 	 *
 	 * @param AssetPath       Target blueprint asset, e.g. "/Game/AI/BTA_LogShot".
-	 * @param ParentClassPath Class path of a non-abstract UBTTaskNode/UBTService/
-	 *                        UBTDecorator-derived class (/Script/... or /Game/..._C);
-	 *                        recipes additionally require the *BlueprintBase class.
+	 * @param ParentClassPath Class path of a UBTTaskNode/UBTService/UBTDecorator-derived
+	 *                        class (/Script/... or /Game/..._C). Abstract parents are
+	 *                        allowed - "derive and implement" is the standard pattern and
+	 *                        every engine *BlueprintBase class is abstract; the real gate
+	 *                        is FKismetEditorUtilities::CanCreateBlueprintOfClass, so
+	 *                        non-Blueprintable engine BT classes are rejected. Recipes
+	 *                        additionally require the *BlueprintBase class.
 	 * @param ParamsJson      {"PropertyName": value, ...} applied to the class
 	 *                        defaults, e.g. {"Message":"shot fired","Severity":"Warning"}.
 	 * @param RecipeJson      Optional constrained event-graph recipe (see above).

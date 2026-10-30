@@ -3,6 +3,88 @@
 All notable changes to BT Forge are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.6.1] — 2026-10-31
+
+Correctness and contract pass: seven paths that could wedge a session or report
+success for work that never happened, plus the "silent drop" class of bugs
+(wrong-shaped spec fields were treated as absent). No API surface was removed;
+input that used to be silently ignored is now rejected with an exact reason.
+
+### Fixed
+
+- **Verify session could wedge the manager forever**: while Running, a vanished
+  fixture `UBehaviorTreeComponent` made the ticker return without ever ending the
+  session, so every later `start_verify` was refused with "another verify session
+  is in flight" until the editor restarted. The ticker now fails the session after
+  a 5 s fixture grace window.
+- **Orphan PIE sessions**: `AbortToIdle` now cancels a still-queued play-session
+  request (mirroring `Shutdown`), so a start deadline that fires during a long map
+  load no longer brings up a PIE session nobody owns. The cancel is skipped while a
+  session is actually playing - the engine keeps the "request queued" flag set for
+  a while after the session starts, and cancelling then tears down a live PIE
+  mid-frame (reproduced as a `TOptional::GetValue` assertion inside the editor tick).
+- **Blackboard key selectors wrote the wrong key type**: `FBlackboard::FKey` is an
+  id across the whole blackboard chain, so indexing `UBlackboardData::Keys` with it
+  picked the wrong entry (or none) whenever the blackboard has a parent. Now uses
+  `GetKey()`.
+- **Half-created assets**: a failed BehaviorTree creation left the already-created
+  Blackboard behind (retrying the same path then failed with "already exists"), and
+  a failed EQS/blueprint save left an unsaved package that vanished on restart while
+  the tool had reported `ok:true`. All creation paths now roll back and report.
+- **Silently ignored tool arguments**: wrong-shaped `BlackboardJson`,
+  `SectionJson`, `ParamsJson` and `RecipeJson` used to fall back to "not provided";
+  they are now tool errors. `blackboardInit`/`queryParams` accept an object or a JSON
+  string and reject anything else.
+- **Wrong-shaped spec fields**: `"params": "x"`, `"children": 5`, `"keys": 5`,
+  `"generator": {...}, "params": "x"` are errors instead of "no params / no children
+  / no keys".
+- **EQS could not write a plain uint8 property** (it was always routed to the enum
+  writer and rejected). Byte properties without an enum now write as numbers.
+- **Blueprint recipes ignored refused pin connections**: an unwired `FinishExecute`
+  produced a task that sat InProgress forever while creation reported success.
+
+### Changed
+
+- **Runtime nodes fail loudly instead of silently succeeding**: `ComputeValue` and
+  `UpdateDistance` verify the key exists on the runtime blackboard (a CDO default can
+  name a key that no longer exists), `UpdateDistance` requires a Float `ResultKey` and
+  writes `-1` when the source location cannot be resolved (a stale distance used to
+  gate decorators forever), and `LogMessage` reports `<missing key>` instead of `0`.
+  Key-type checks are subclass-aware (`IsChildOf`), so project `UBlackboardKeyType_*`
+  subclasses work like the engine's own getters.
+- **`inspect_references`**: reports `cookSafe` (documented name) next to
+  `consumableByGameBuild`, computes `existsOnDisk` for resolved references too,
+  classifies **project** modules from the `.uproject` descriptor (a `Type=Editor`
+  project module no longer passes the cook gate), and flags `summary.truncated` +
+  downgrades the verdict instead of silently stopping at 600 references.
+- **`get_capability_catalog`**: sorts before applying the per-section cap (output is
+  reproducible), sorts EQS queries, and rejects a malformed `SectionJson` instead of
+  returning the full catalog.
+- **Verify results on disk**: one `result_<sessionId>.json` per run plus an atomic
+  `last_result.json` (write-to-temp then rename); a poller can no longer read a
+  half-written file, and a second run no longer overwrites the first run's evidence.
+  Failed sessions now carry `checks[]`/`checksPassed`/`checksTotal` like every other
+  terminal result.
+- **Official endpoint parity**: `ValidateBehaviorTree.BlackboardJson` and
+  `GetCapabilityCatalog.SectionJson` now carry defaults (the schema generator treats
+  empty string defaults as "no default"), and the `BuildBehaviorTree` description
+  covers services, decorators and class paths.
+
+### Docs
+
+- README (EN/ZH): the tool table lists all twelve tools (it claimed eleven and was
+  missing `create_node_blueprint`), two merged Markdown rows/bullets are fixed, the
+  known-limitations list no longer says Blueprint nodes cannot be created or that the
+  EQS context subclass is an "M6 first step", and the runtime suite is quoted as the
+  34 checks it actually reports.
+
+### Verified
+
+- UE 5.8 Lyra, built-in endpoint (`:8090`): base / L2 / L3.5 / M1-M2 / M3 (34) /
+  M4 / M5 / M6 **all PASS**.
+- UE 5.5 blank project: compiles with **zero source changes**; base / M1-M2 /
+  M3 (34) **PASS** (L2/L3.5 need Lyra content).
+
 ## [2.6.0] — 2026-10-30
 
 M6 (part 2): constrained event-graph recipes — `create_node_blueprint` gains

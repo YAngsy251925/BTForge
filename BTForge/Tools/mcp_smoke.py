@@ -267,7 +267,9 @@ def main():
 def run_l2(client, tools):
     """L2 write path: RunEQS (asset ref + enum + result key) -> MoveTo (key goal),
     plus negative cases proving the validation contract."""
-    asset = "/Game/AI/BT_Smoke_L2v2"
+    # Timestamped on purpose: a fixed name makes the second run of this suite fail
+    # with "already exists" on a machine where the first run's assets were kept.
+    asset = "/Game/AI/BT_Smoke_L2_" + time.strftime("%H%M%S")
     print(f"\n=== L2: create {asset} (MoveGoal blackboard) ===", flush=True)
     _, text = client.call_tool(tools["create"], {"AssetPath": asset, "BlackboardJson": json.dumps(BLACKBOARD_L2)})
     created = parse_tool_result(text)

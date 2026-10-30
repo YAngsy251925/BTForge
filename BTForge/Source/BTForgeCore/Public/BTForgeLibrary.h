@@ -24,9 +24,15 @@
 /**
  * Build Behavior Tree + Blackboard assets from JSON specs, deterministically.
  *
- * Node whitelist (L2): composites Sequence/Selector; tasks Wait, MoveTo,
- * RunEQS. Blackboard key references are validated against the tree's blackboard;
- * asset references are loaded and type-checked before writing.
+ * Node whitelist (engine classes + the node library): composites
+ * Sequence/Selector; tasks Wait, MoveTo, RunEQS, ComputeValue, Log; services
+ * RunEQS, SetValue, UpdateDistance; decorators Blackboard, FloatCompare,
+ * DistanceCheck, Chance. Any other type may be given as a class path
+ * (/Script/Module.Class or /Game/Folder/Asset.Asset_C) and is base-class,
+ * abstract-flag and Blueprintability checked. Composites accept "services",
+ * any child accepts "decorators". Blackboard key references are validated
+ * against the tree's blackboard; asset references are loaded and type-checked
+ * before writing.
  *
  * Every function returns a JSON string: {"ok":true,...} on success,
  * {"ok":false,"error":<message with a JSON path>} on failure.
@@ -62,9 +68,11 @@ public:
 	 *      {"type":"Wait","name":"Pause","params":{"WaitTime":2.0,"RandomDeviation":1.0}}]},
 	 *    {"type":"Wait","params":{"WaitTime":5.0}}]}
 	 *
-	 * Rules: root must be Sequence/Selector; every composite needs a non-empty
-	 * "children" array; tasks take no children; unknown "type" or unknown param
-	 * names are rejected (wait params: WaitTime, RandomDeviation as numbers).
+	 * Rules: root must be a composite (any UBTCompositeNode subclass, or such a
+	 * class path); every composite needs a non-empty "children" array; tasks take
+	 * no children; unknown "type" or unknown param names are rejected (wait params:
+	 * WaitTime, RandomDeviation as numbers). Composites accept "services":[{type,params}];
+	 * any child accepts "decorators":[{type,params}] (several combine as AND).
 	 *
 	 * @param AssetPath Existing BT asset created by CreateBehaviorTreeAsset.
 	 * @param TreeJson   Root node object as above.
@@ -93,7 +101,9 @@ public:
 	 * verify a build or to inspect an existing tree before extending it.
 	 *
 	 * @param AssetPath Existing BT asset path.
-	 * @return JSON {"ok":true,"blackboard":{...},"root":{...}} ; root is null for an empty tree.
+	 * @return JSON {"ok":true,"blackboardKeys":[...],"root":{...},"nodeCount":N};
+	 *         root is null for an empty tree. Scalar params only - object references
+	 *         inside structs are reported by inspect_references instead.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "BTForge")
 	static FString InspectBehaviorTree(const FString& AssetPath);

@@ -32,19 +32,37 @@ namespace
 		TWeakObjectPtr<UObject> ObjectValue;
 	};
 
+	/** Key-type test that honours subclasses. A project can derive its own
+	 *  UBlackboardKeyType_* subclass; comparing classes with == rejected those keys
+	 *  even though the engine's own getters (which Cast<> internally) accept them. */
+	bool IsKeyOfType(const FBlackboardKeySelector& Key, const UClass* ExpectedType)
+	{
+		return Key.SelectedKeyType != nullptr && ExpectedType != nullptr && Key.SelectedKeyType->IsChildOf(ExpectedType);
+	}
+
 	bool ReadNumericValue(const UBlackboardComponent& Blackboard, const FBlackboardKeySelector& Key, double& OutValue)
 	{
-		if (Key.SelectedKeyType == UBlackboardKeyType_Int::StaticClass())
+		if (IsKeyOfType(Key, UBlackboardKeyType_Int::StaticClass()))
 		{
 			OutValue = Blackboard.GetValueAsInt(Key.SelectedKeyName);
 			return true;
 		}
-		if (Key.SelectedKeyType == UBlackboardKeyType_Float::StaticClass())
+		if (IsKeyOfType(Key, UBlackboardKeyType_Float::StaticClass()))
 		{
 			OutValue = Blackboard.GetValueAsFloat(Key.SelectedKeyName);
 			return true;
 		}
 		return false;
+	}
+
+	/** True when the runtime blackboard actually carries this key. The selector's
+	 *  SelectedKeyType comes from the asset/CDO and may name a key that no longer
+	 *  exists (renamed key, defaults written by create_node_blueprint); the engine's
+	 *  Set* calls then no-op silently, which used to look like success. */
+	bool HasBlackboardKey(const UBlackboardComponent& Blackboard, const FBlackboardKeySelector& Key)
+	{
+		return !Key.SelectedKeyName.IsNone()
+			&& Blackboard.GetKeyID(Key.SelectedKeyName) != FBlackboard::InvalidKey;
 	}
 
 	bool SnapshotKey(const UBlackboardComponent& Blackboard, const FBlackboardKeySelector& Key, FBForgeValueSnapshot& Out)
@@ -54,49 +72,49 @@ namespace
 		{
 			return false;
 		}
-		if (Key.SelectedKeyType == UBlackboardKeyType_Bool::StaticClass())
+		if (IsKeyOfType(Key, UBlackboardKeyType_Bool::StaticClass()))
 		{
 			Out.Kind = FBForgeValueSnapshot::EKind::Bool;
 			Out.BoolValue = Blackboard.GetValueAsBool(KeyName);
 			return true;
 		}
-		if (Key.SelectedKeyType == UBlackboardKeyType_Int::StaticClass())
+		if (IsKeyOfType(Key, UBlackboardKeyType_Int::StaticClass()))
 		{
 			Out.Kind = FBForgeValueSnapshot::EKind::Number;
 			Out.NumberValue = Blackboard.GetValueAsInt(KeyName);
 			return true;
 		}
-		if (Key.SelectedKeyType == UBlackboardKeyType_Float::StaticClass())
+		if (IsKeyOfType(Key, UBlackboardKeyType_Float::StaticClass()))
 		{
 			Out.Kind = FBForgeValueSnapshot::EKind::Number;
 			Out.NumberValue = Blackboard.GetValueAsFloat(KeyName);
 			return true;
 		}
-		if (Key.SelectedKeyType == UBlackboardKeyType_String::StaticClass())
+		if (IsKeyOfType(Key, UBlackboardKeyType_String::StaticClass()))
 		{
 			Out.Kind = FBForgeValueSnapshot::EKind::String;
 			Out.StringValue = Blackboard.GetValueAsString(KeyName);
 			return true;
 		}
-		if (Key.SelectedKeyType == UBlackboardKeyType_Name::StaticClass())
+		if (IsKeyOfType(Key, UBlackboardKeyType_Name::StaticClass()))
 		{
 			Out.Kind = FBForgeValueSnapshot::EKind::Name;
 			Out.NameValue = Blackboard.GetValueAsName(KeyName);
 			return true;
 		}
-		if (Key.SelectedKeyType == UBlackboardKeyType_Vector::StaticClass())
+		if (IsKeyOfType(Key, UBlackboardKeyType_Vector::StaticClass()))
 		{
 			Out.Kind = FBForgeValueSnapshot::EKind::Vector;
 			Out.VectorValue = Blackboard.GetValueAsVector(KeyName);
 			return true;
 		}
-		if (Key.SelectedKeyType == UBlackboardKeyType_Rotator::StaticClass())
+		if (IsKeyOfType(Key, UBlackboardKeyType_Rotator::StaticClass()))
 		{
 			Out.Kind = FBForgeValueSnapshot::EKind::Rotator;
 			Out.RotatorValue = Blackboard.GetValueAsRotator(KeyName);
 			return true;
 		}
-		if (Key.SelectedKeyType == UBlackboardKeyType_Object::StaticClass())
+		if (IsKeyOfType(Key, UBlackboardKeyType_Object::StaticClass()))
 		{
 			Out.Kind = FBForgeValueSnapshot::EKind::Object;
 			Out.ObjectValue = Blackboard.GetValueAsObject(KeyName);
@@ -112,7 +130,7 @@ namespace
 		{
 			return false;
 		}
-		if (Destination.SelectedKeyType == UBlackboardKeyType_Bool::StaticClass())
+		if (IsKeyOfType(Destination, UBlackboardKeyType_Bool::StaticClass()))
 		{
 			if (In.Kind == FBForgeValueSnapshot::EKind::Bool)
 			{
@@ -126,7 +144,7 @@ namespace
 			}
 			return false;
 		}
-		if (Destination.SelectedKeyType == UBlackboardKeyType_Int::StaticClass())
+		if (IsKeyOfType(Destination, UBlackboardKeyType_Int::StaticClass()))
 		{
 			if (In.Kind == FBForgeValueSnapshot::EKind::Number)
 			{
@@ -140,7 +158,7 @@ namespace
 			}
 			return false;
 		}
-		if (Destination.SelectedKeyType == UBlackboardKeyType_Float::StaticClass())
+		if (IsKeyOfType(Destination, UBlackboardKeyType_Float::StaticClass()))
 		{
 			if (In.Kind == FBForgeValueSnapshot::EKind::Number)
 			{
@@ -149,7 +167,7 @@ namespace
 			}
 			return false;
 		}
-		if (Destination.SelectedKeyType == UBlackboardKeyType_String::StaticClass())
+		if (IsKeyOfType(Destination, UBlackboardKeyType_String::StaticClass()))
 		{
 			if (In.Kind == FBForgeValueSnapshot::EKind::String)
 			{
@@ -163,7 +181,7 @@ namespace
 			}
 			return false;
 		}
-		if (Destination.SelectedKeyType == UBlackboardKeyType_Name::StaticClass())
+		if (IsKeyOfType(Destination, UBlackboardKeyType_Name::StaticClass()))
 		{
 			if (In.Kind == FBForgeValueSnapshot::EKind::Name)
 			{
@@ -177,7 +195,7 @@ namespace
 			}
 			return false;
 		}
-		if (Destination.SelectedKeyType == UBlackboardKeyType_Vector::StaticClass())
+		if (IsKeyOfType(Destination, UBlackboardKeyType_Vector::StaticClass()))
 		{
 			if (In.Kind == FBForgeValueSnapshot::EKind::Vector)
 			{
@@ -186,7 +204,7 @@ namespace
 			}
 			return false;
 		}
-		if (Destination.SelectedKeyType == UBlackboardKeyType_Rotator::StaticClass())
+		if (IsKeyOfType(Destination, UBlackboardKeyType_Rotator::StaticClass()))
 		{
 			if (In.Kind == FBForgeValueSnapshot::EKind::Rotator)
 			{
@@ -195,7 +213,7 @@ namespace
 			}
 			return false;
 		}
-		if (Destination.SelectedKeyType == UBlackboardKeyType_Object::StaticClass())
+		if (IsKeyOfType(Destination, UBlackboardKeyType_Object::StaticClass()))
 		{
 			if (In.Kind == FBForgeValueSnapshot::EKind::Object)
 			{
@@ -214,7 +232,7 @@ namespace
 		{
 			return false;
 		}
-		if (Key.SelectedKeyType == UBlackboardKeyType_Object::StaticClass())
+		if (IsKeyOfType(Key, UBlackboardKeyType_Object::StaticClass()))
 		{
 			const AActor* Actor = Cast<const AActor>(Blackboard.GetValueAsObject(KeyName));
 			if (Actor != nullptr)
@@ -224,7 +242,7 @@ namespace
 			}
 			return false;
 		}
-		if (Key.SelectedKeyType == UBlackboardKeyType_Vector::StaticClass())
+		if (IsKeyOfType(Key, UBlackboardKeyType_Vector::StaticClass()))
 		{
 			OutLocation = Blackboard.GetValueAsVector(KeyName);
 			return true;
@@ -307,6 +325,15 @@ EBTNodeResult::Type UBTForgeTask_ComputeValue::ExecuteTask(UBehaviorTreeComponen
 		UE_LOG(LogBTForge, Warning, TEXT("Compute: LeftKey and ResultKey must be set"));
 		return EBTNodeResult::Failed;
 	}
+	if (!HasBlackboardKey(*Blackboard, LeftKey) || !HasBlackboardKey(*Blackboard, ResultKey)
+		|| (!RightKey.SelectedKeyName.IsNone() && !HasBlackboardKey(*Blackboard, RightKey)))
+	{
+		// A default written onto a class CDO can name a key the runtime blackboard does
+		// not have; SetValueAsInt then no-ops while the task still reported success.
+		UE_LOG(LogBTForge, Warning, TEXT("Compute: one of '%s'/'%s'/'%s' does not exist on the runtime blackboard"),
+			*LeftKey.SelectedKeyName.ToString(), *RightKey.SelectedKeyName.ToString(), *ResultKey.SelectedKeyName.ToString());
+		return EBTNodeResult::Failed;
+	}
 
 	double Left = 0.0;
 	if (!ReadNumericValue(*Blackboard, LeftKey, Left))
@@ -342,11 +369,11 @@ EBTNodeResult::Type UBTForgeTask_ComputeValue::ExecuteTask(UBehaviorTreeComponen
 		return EBTNodeResult::Failed;
 	}
 
-	if (ResultKey.SelectedKeyType == UBlackboardKeyType_Int::StaticClass())
+	if (IsKeyOfType(ResultKey, UBlackboardKeyType_Int::StaticClass()))
 	{
 		Blackboard->SetValueAsInt(ResultKey.SelectedKeyName, FMath::RoundToInt(Outcome));
 	}
-	else if (ResultKey.SelectedKeyType == UBlackboardKeyType_Float::StaticClass())
+	else if (IsKeyOfType(ResultKey, UBlackboardKeyType_Float::StaticClass()))
 	{
 		Blackboard->SetValueAsFloat(ResultKey.SelectedKeyName, static_cast<float>(Outcome));
 	}
@@ -394,35 +421,42 @@ namespace
 		{
 			return FString();
 		}
-		if (Key.SelectedKeyType == UBlackboardKeyType_Bool::StaticClass())
+		if (Blackboard.GetKeyID(KeyName) == FBlackboard::InvalidKey)
+		{
+			// A checkpoint that prints "Key=0" for a missing key hides exactly what the
+			// log line is supposed to prove: say it out loud instead of inventing a value.
+			UE_LOG(LogBTForge, Warning, TEXT("Log: key '%s' does not exist on the runtime blackboard"), *KeyName.ToString());
+			return FString::Printf(TEXT("%s=<missing key>"), *KeyName.ToString());
+		}
+		if (IsKeyOfType(Key, UBlackboardKeyType_Bool::StaticClass()))
 		{
 			return FString::Printf(TEXT("%s=%s"), *KeyName.ToString(), Blackboard.GetValueAsBool(KeyName) ? TEXT("true") : TEXT("false"));
 		}
-		if (Key.SelectedKeyType == UBlackboardKeyType_Int::StaticClass())
+		if (IsKeyOfType(Key, UBlackboardKeyType_Int::StaticClass()))
 		{
 			return FString::Printf(TEXT("%s=%d"), *KeyName.ToString(), Blackboard.GetValueAsInt(KeyName));
 		}
-		if (Key.SelectedKeyType == UBlackboardKeyType_Float::StaticClass())
+		if (IsKeyOfType(Key, UBlackboardKeyType_Float::StaticClass()))
 		{
 			return FString::Printf(TEXT("%s=%.3f"), *KeyName.ToString(), Blackboard.GetValueAsFloat(KeyName));
 		}
-		if (Key.SelectedKeyType == UBlackboardKeyType_String::StaticClass())
+		if (IsKeyOfType(Key, UBlackboardKeyType_String::StaticClass()))
 		{
 			return FString::Printf(TEXT("%s=\"%s\""), *KeyName.ToString(), *Blackboard.GetValueAsString(KeyName));
 		}
-		if (Key.SelectedKeyType == UBlackboardKeyType_Name::StaticClass())
+		if (IsKeyOfType(Key, UBlackboardKeyType_Name::StaticClass()))
 		{
 			return FString::Printf(TEXT("%s=%s"), *KeyName.ToString(), *Blackboard.GetValueAsName(KeyName).ToString());
 		}
-		if (Key.SelectedKeyType == UBlackboardKeyType_Vector::StaticClass())
+		if (IsKeyOfType(Key, UBlackboardKeyType_Vector::StaticClass()))
 		{
 			return FString::Printf(TEXT("%s=%s"), *KeyName.ToString(), *Blackboard.GetValueAsVector(KeyName).ToString());
 		}
-		if (Key.SelectedKeyType == UBlackboardKeyType_Rotator::StaticClass())
+		if (IsKeyOfType(Key, UBlackboardKeyType_Rotator::StaticClass()))
 		{
 			return FString::Printf(TEXT("%s=%s"), *KeyName.ToString(), *Blackboard.GetValueAsRotator(KeyName).ToString());
 		}
-		if (Key.SelectedKeyType == UBlackboardKeyType_Object::StaticClass())
+		if (IsKeyOfType(Key, UBlackboardKeyType_Object::StaticClass()))
 		{
 			const UObject* Value = Blackboard.GetValueAsObject(KeyName);
 			return FString::Printf(TEXT("%s=%s"), *KeyName.ToString(), Value ? *Value->GetName() : TEXT("None"));
@@ -504,38 +538,38 @@ void UBTForgeService_SetBlackboardValue::TickNode(UBehaviorTreeComponent& OwnerC
 	}
 
 	const FName KeyName = KeyToSet.SelectedKeyName;
-	if (KeyToSet.SelectedKeyType == UBlackboardKeyType_Float::StaticClass())
+	if (IsKeyOfType(KeyToSet, UBlackboardKeyType_Float::StaticClass()))
 	{
 		Blackboard->SetValueAsFloat(KeyName, static_cast<float>(Constant));
 	}
-	else if (KeyToSet.SelectedKeyType == UBlackboardKeyType_Int::StaticClass())
+	else if (IsKeyOfType(KeyToSet, UBlackboardKeyType_Int::StaticClass()))
 	{
 		Blackboard->SetValueAsInt(KeyName, FMath::RoundToInt(Constant));
 	}
-	else if (KeyToSet.SelectedKeyType == UBlackboardKeyType_Bool::StaticClass())
+	else if (IsKeyOfType(KeyToSet, UBlackboardKeyType_Bool::StaticClass()))
 	{
 		Blackboard->SetValueAsBool(KeyName, bConstantBool);
 	}
-	else if (KeyToSet.SelectedKeyType == UBlackboardKeyType_String::StaticClass())
+	else if (IsKeyOfType(KeyToSet, UBlackboardKeyType_String::StaticClass()))
 	{
 		Blackboard->SetValueAsString(KeyName, ConstantString);
 	}
-	else if (KeyToSet.SelectedKeyType == UBlackboardKeyType_Name::StaticClass())
+	else if (IsKeyOfType(KeyToSet, UBlackboardKeyType_Name::StaticClass()))
 	{
 		Blackboard->SetValueAsName(KeyName, FName(*ConstantString));
 	}
-	else if (KeyToSet.SelectedKeyType == UBlackboardKeyType_Vector::StaticClass())
+	else if (IsKeyOfType(KeyToSet, UBlackboardKeyType_Vector::StaticClass()))
 	{
 		Blackboard->SetValueAsVector(KeyName, ConstantVector);
 	}
-	else if (KeyToSet.SelectedKeyType == UBlackboardKeyType_Rotator::StaticClass())
+	else if (IsKeyOfType(KeyToSet, UBlackboardKeyType_Rotator::StaticClass()))
 	{
 		Blackboard->SetValueAsRotator(KeyName, ConstantRotator);
 	}
 	else
 	{
 		// Object/Class keys have no meaningful constant; copy from SourceKey instead.
-		UE_LOG(LogBTForge, Verbose, TEXT("Set Value service: key '%s' needs a SourceKey (no constant for Object/Class keys)"), *KeyName.ToString());
+		UE_LOG(LogBTForge, Warning, TEXT("Set Value service: key '%s' needs a SourceKey (no constant for Object/Class keys) - nothing is written"), *KeyName.ToString());
 	}
 }
 
@@ -577,13 +611,27 @@ void UBTForgeService_UpdateDistance::TickNode(UBehaviorTreeComponent& OwnerComp,
 	{
 		return;
 	}
+	if (!HasBlackboardKey(*Blackboard, ResultKey) || !IsKeyOfType(ResultKey, UBlackboardKeyType_Float::StaticClass()))
+	{
+		// SetValueAsFloat no-ops on a missing/non-Float key, so the distance silently
+		// froze at its old value while decorators kept gating on it.
+		UE_LOG(LogBTForge, Warning, TEXT("Update Distance service: ResultKey '%s' must be an existing Float key"), *ResultKey.SelectedKeyName.ToString());
+		return;
+	}
 
 	FVector SourceLocation = FVector::ZeroVector;
 	FVector TargetLocation = FVector::ZeroVector;
 	if (!ResolveLocationFromKey(*Blackboard, SourceKey, SourceLocation) || !ResolveLocationFromKey(*Blackboard, TargetKey, TargetLocation))
 	{
-		UE_LOG(LogBTForge, Verbose, TEXT("Update Distance service: '%s' or '%s' has no location (Object actor or Vector key required)"),
-			*SourceKey.SelectedKeyName.ToString(), *TargetKey.SelectedKeyName.ToString());
+		const float Previous = Blackboard->GetValueAsFloat(ResultKey.SelectedKeyName);
+		if (Previous >= 0.0f)
+		{
+			UE_LOG(LogBTForge, Warning, TEXT("Update Distance service: '%s' or '%s' has no location (Object actor or Vector key required); writing -1 from now on"),
+				*SourceKey.SelectedKeyName.ToString(), *TargetKey.SelectedKeyName.ToString());
+		}
+		// A stale distance is worse than no distance: decorators would keep gating on
+		// the last good value forever. -1 is out of range for both built-in decorators.
+		Blackboard->SetValueAsFloat(ResultKey.SelectedKeyName, -1.0f);
 		return;
 	}
 	Blackboard->SetValueAsFloat(ResultKey.SelectedKeyName, static_cast<float>(FVector::Dist(SourceLocation, TargetLocation)));

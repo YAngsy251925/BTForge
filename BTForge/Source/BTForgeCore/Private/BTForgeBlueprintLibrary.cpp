@@ -228,8 +228,18 @@ namespace
 			OutError = FString::Printf(TEXT("'%s' has no exec/self pins (not callable?)"), *Recipe.Function.ToString());
 			return false;
 		}
-		Schema->TryCreateConnection(ExecCursor, CallExec);
-		Schema->TryCreateConnection(CallSelf, TargetPin);
+		// A refused connection used to be invisible: the asset was created and reported
+		// ok while the graph was unwired (a recipe task then sat InProgress forever).
+		if (!Schema->TryCreateConnection(ExecCursor, CallExec))
+		{
+			OutError = FString::Printf(TEXT("could not wire the event's exec pin into '%s'"), *Recipe.Function.ToString());
+			return false;
+		}
+		if (!Schema->TryCreateConnection(CallSelf, TargetPin))
+		{
+			OutError = FString::Printf(TEXT("could not wire the event's '%s' pin into the self pin of '%s'"), *Recipe.TargetEventPin.ToString(), *Recipe.Function.ToString());
+			return false;
+		}
 		ExecCursor = CallNode->FindPin(UEdGraphSchema_K2::PN_Then, EGPD_Output);
 
 		if (Recipe.bIsTask)
@@ -239,9 +249,15 @@ namespace
 			FinishNode->FunctionReference.SetExternalMember(TEXT("FinishExecute"), UBTTask_BlueprintBase::StaticClass());
 			PlaceK2Node(Graph, FinishNode);
 			UEdGraphPin* FinishExec = FinishNode->FindPin(UEdGraphSchema_K2::PN_Execute, EGPD_Input);
-			if (FinishExec != nullptr && ExecCursor != nullptr)
+			if (FinishExec == nullptr || ExecCursor == nullptr)
 			{
-				Schema->TryCreateConnection(ExecCursor, FinishExec);
+				OutError = TEXT("FinishExecute has no exec pin to wire into");
+				return false;
+			}
+			if (!Schema->TryCreateConnection(ExecCursor, FinishExec))
+			{
+				OutError = TEXT("could not wire the recipe call into FinishExecute");
+				return false;
 			}
 			// Unconnected self pin defaults to Self; pin the success literal.
 			if (UEdGraphPin* SuccessPin = FinishNode->FindPin(TEXT("bSuccess"), EGPD_Input))
@@ -370,16 +386,13 @@ FString UBTForgeBlueprintLibrary::CreateNodeBlueprint(const FString& AssetPath, 
 	}
 
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(NewBP);
-	if (GEditor)
+	UEditorAssetSubsystem* AssetSubsystem = GEditor ? GEditor->GetEditorSubsystem<UEditorAssetSubsystem>() : nullptr;
+	if (AssetSubsystem == nullptr || !AssetSubsystem->SaveLoadedAsset(NewBP, false))
 	{
-		if (UEditorAssetSubsystem* AssetSubsystem = GEditor->GetEditorSubsystem<UEditorAssetSubsystem>())
-		{
-			AssetSubsystem->SaveLoadedAsset(NewBP, false);
-		}
-		else
-		{
-			return MakeErrorJson(TEXT("blueprint created but not saved: EditorAssetSubsystem unavailable at ") + AssetPath);
-		}
+		// ok:true on an unsaved package means the returned classPath dangles after the
+		// next editor restart: drop the asset and report the failure instead.
+		DeleteHalfCreatedAsset(AssetPath);
+		return MakeErrorJson(TEXT("blueprint could not be saved; nothing was kept: ") + AssetPath);
 	}
 
 	TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();

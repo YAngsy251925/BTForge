@@ -165,6 +165,45 @@ namespace
 		return TEXT("Sequence, Selector, Wait, MoveTo, RunEQS, ComputeValue, Log, or a '/path/Asset.Asset_C' class path (any non-abstract UBTCompositeNode/UBTTaskNode-derived class, engine or blueprint)");
 	}
 
+	/** Type-checked optional field access. UE's GetObjectField/GetArrayField only log a
+	 *  warning and hand back nullptr / an empty array on a type mismatch, so "params":"x"
+	 *  used to become "no params" and the build still reported ok:true. Absent stays absent. */
+	bool TryGetSpecObject(const TSharedPtr<FJsonObject>& Object, const TCHAR* Field, const FString& Path,
+		TSharedPtr<FJsonObject>& Out, FString& OutError)
+	{
+		Out.Reset();
+		if (!Object.IsValid() || !Object->HasField(Field))
+		{
+			return true;
+		}
+		const TSharedPtr<FJsonObject>* Value = nullptr;
+		if (!Object->TryGetObjectField(Field, Value) || Value == nullptr || !Value->IsValid())
+		{
+			OutError = FString::Printf(TEXT("%s.%s: expected an object"), *Path, Field);
+			return false;
+		}
+		Out = *Value;
+		return true;
+	}
+
+	bool TryGetSpecArray(const TSharedPtr<FJsonObject>& Object, const TCHAR* Field, const FString& Path,
+		TArray<TSharedPtr<FJsonValue>>& Out, FString& OutError)
+	{
+		Out.Reset();
+		if (!Object.IsValid() || !Object->HasField(Field))
+		{
+			return true;
+		}
+		const TArray<TSharedPtr<FJsonValue>>* Value = nullptr;
+		if (!Object->TryGetArrayField(Field, Value) || Value == nullptr)
+		{
+			OutError = FString::Printf(TEXT("%s.%s: expected an array"), *Path, Field);
+			return false;
+		}
+		Out = *Value;
+		return true;
+	}
+
 	/** Describe one property's expected value shape, for error messages. */
 	FString ParamKindHint(const FProperty* Property)
 	{
@@ -513,9 +552,15 @@ namespace
 			}
 		}
 
-		const TSharedPtr<FJsonObject> Params = (*SpecObject)->HasField(TEXT("params"))
-			? (*SpecObject)->GetObjectField(TEXT("params"))
-			: MakeShared<FJsonObject>();
+		TSharedPtr<FJsonObject> Params;
+		if (!TryGetSpecObject(*SpecObject, TEXT("params"), NodePath, Params, OutError))
+		{
+			return nullptr;
+		}
+		if (!Params.IsValid())
+		{
+			Params = MakeShared<FJsonObject>();
+		}
 		if (!ApplyParamsToContainer(AuxNode->GetClass(), AuxNode, Params, &KnownBlackboardKeys, NodePath, OutError))
 		{
 			return nullptr;
@@ -551,9 +596,15 @@ namespace
 			}
 		}
 
-		const TSharedPtr<FJsonObject> Params = NodeJson->HasField(TEXT("params"))
-			? NodeJson->GetObjectField(TEXT("params"))
-			: MakeShared<FJsonObject>();
+		TSharedPtr<FJsonObject> Params;
+		if (!TryGetSpecObject(NodeJson, TEXT("params"), NodePath, Params, OutError))
+		{
+			return nullptr;
+		}
+		if (!Params.IsValid())
+		{
+			Params = MakeShared<FJsonObject>();
+		}
 		if (!ApplyParamsToContainer(Node->GetClass(), Node, Params, &KnownBlackboardKeys, NodePath, OutError))
 		{
 			return nullptr;
@@ -568,19 +619,20 @@ namespace
 		if (Composite != nullptr)
 		{
 			// Optional "services": tick alongside this composite's branch.
-			if (NodeJson->HasField(TEXT("services")))
+			TArray<TSharedPtr<FJsonValue>> ServiceSpecs;
+			if (!TryGetSpecArray(NodeJson, TEXT("services"), NodePath, ServiceSpecs, OutError))
 			{
-				const TArray<TSharedPtr<FJsonValue>>& ServiceSpecs = NodeJson->GetArrayField(TEXT("services"));
-				for (int32 ServiceIndex = 0; ServiceIndex < ServiceSpecs.Num(); ServiceIndex++)
+				return nullptr;
+			}
+			for (int32 ServiceIndex = 0; ServiceIndex < ServiceSpecs.Num(); ServiceIndex++)
+			{
+				const FString ServicePath = FString::Printf(TEXT("%s.services[%d]"), *NodePath, ServiceIndex);
+				UBTNode* Service = BuildAuxNode(Tree, KnownBlackboardKeys, TEXT("service"), ServiceSpecs[ServiceIndex], ServicePath, OutNodeCount, OutError);
+				if (Service == nullptr)
 				{
-					const FString ServicePath = FString::Printf(TEXT("%s.services[%d]"), *NodePath, ServiceIndex);
-					UBTNode* Service = BuildAuxNode(Tree, KnownBlackboardKeys, TEXT("service"), ServiceSpecs[ServiceIndex], ServicePath, OutNodeCount, OutError);
-					if (Service == nullptr)
-					{
-						return nullptr;
-					}
-					Composite->Services.Add(Cast<UBTService>(Service));
+					return nullptr;
 				}
+				Composite->Services.Add(Cast<UBTService>(Service));
 			}
 
 			if (!NodeJson->HasField(TEXT("children")))
@@ -588,7 +640,11 @@ namespace
 				OutError = NodePath + TEXT(": composite requires a non-empty 'children' array");
 				return nullptr;
 			}
-			const TArray<TSharedPtr<FJsonValue>>& Children = NodeJson->GetArrayField(TEXT("children"));
+			TArray<TSharedPtr<FJsonValue>> Children;
+			if (!TryGetSpecArray(NodeJson, TEXT("children"), NodePath, Children, OutError))
+			{
+				return nullptr;
+			}
 			if (Children.Num() == 0)
 			{
 				OutError = NodePath + TEXT(": 'children' must not be empty");
@@ -620,9 +676,12 @@ namespace
 
 				// Optional "decorators" on the child spec: gate entry to this
 				// child branch. Empty DecoratorOps = AND over the list.
-				if ((*ChildObject)->HasField(TEXT("decorators")))
+				TArray<TSharedPtr<FJsonValue>> DecoratorSpecs;
+				if (!TryGetSpecArray(*ChildObject, TEXT("decorators"), ChildPath, DecoratorSpecs, OutError))
 				{
-					const TArray<TSharedPtr<FJsonValue>>& DecoratorSpecs = (*ChildObject)->GetArrayField(TEXT("decorators"));
+					return nullptr;
+				}
+				{
 					for (int32 DecoratorIndex = 0; DecoratorIndex < DecoratorSpecs.Num(); DecoratorIndex++)
 					{
 						const FString DecoratorPath = FString::Printf(TEXT("%s.decorators[%d]"), *ChildPath, DecoratorIndex);
@@ -666,13 +725,18 @@ namespace
 			if (!KeyName.IsNone())
 			{
 				const FBlackboard::FKey KeyId = BlackboardAsset->GetKeyID(KeyName);
-				if (KeyId != FBlackboard::InvalidKey && BlackboardAsset->Keys.IsValidIndex(KeyId))
+				// FKey is an id in the *whole* blackboard chain, not an index into this
+				// asset's Keys array: with a parent blackboard FirstKeyID > 0, so
+				// indexing Keys directly writes the wrong KeyType (or none at all) while
+				// the id still looks right - exactly the silent runtime failure this
+				// fixup exists to prevent.
+				const FBlackboardEntry* Entry = BlackboardAsset->GetKey(KeyId);
+				if (Entry != nullptr)
 				{
-					const FBlackboardEntry& Entry = BlackboardAsset->Keys[KeyId];
 					if (TypeProperty != nullptr)
 					{
 						TypeProperty->SetObjectPropertyValue(TypeProperty->ContainerPtrToValuePtr<void>(Data),
-							Entry.KeyType != nullptr ? Entry.KeyType->GetClass() : nullptr);
+							Entry->KeyType != nullptr ? Entry->KeyType->GetClass() : nullptr);
 					}
 					if (IdProperty != nullptr)
 					{
@@ -1013,7 +1077,12 @@ FString UBTForgeLibrary::CreateBehaviorTreeAsset(const FString& AssetPath, const
 	{
 		return MakeErrorJson(TEXT("BlackboardJson must contain a 'keys' array (may be empty)."));
 	}
-	const TArray<TSharedPtr<FJsonValue>>& KeySpecs = BlackboardSpec->GetArrayField(TEXT("keys"));
+	const TArray<TSharedPtr<FJsonValue>>* RawKeySpecs = nullptr;
+	if (!BlackboardSpec->TryGetArrayField(TEXT("keys"), RawKeySpecs) || RawKeySpecs == nullptr)
+	{
+		return MakeErrorJson(TEXT("BlackboardJson.keys: expected an array of {name,type} objects"));
+	}
+	const TArray<TSharedPtr<FJsonValue>>& KeySpecs = *RawKeySpecs;
 
 	struct FKeySpec
 	{
@@ -1048,6 +1117,14 @@ FString UBTForgeLibrary::CreateBehaviorTreeAsset(const FString& AssetPath, const
 	}
 
 	FAssetToolsModule& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools"));
+	UEditorAssetSubsystem* AssetSubsystem = GEditor ? GEditor->GetEditorSubsystem<UEditorAssetSubsystem>() : nullptr;
+	if (AssetSubsystem == nullptr)
+	{
+		// No subsystem means no save *and* no cleanup: creating the assets anyway would
+		// leave two unsaved objects that vanish on the next editor restart while the
+		// caller believes they exist.
+		return MakeErrorJson(TEXT("EditorAssetSubsystem unavailable; nothing was created: ") + AssetPath);
+	}
 
 	UBlackboardData* Blackboard = Cast<UBlackboardData>(
 		AssetTools.Get().CreateAsset(BlackboardAssetName, BlackboardPackagePath, UBlackboardData::StaticClass(), nullptr));
@@ -1067,18 +1144,21 @@ FString UBTForgeLibrary::CreateBehaviorTreeAsset(const FString& AssetPath, const
 		AssetTools.Get().CreateAsset(AssetName, PackagePath, UBehaviorTree::StaticClass(), nullptr));
 	if (Tree == nullptr)
 	{
+		// The blackboard already exists on disk at this point. Leaving it behind makes
+		// every retry fail with "Blackboard asset already exists" for a path the caller
+		// never got anything from, so the whole pair is rolled back.
+		AssetSubsystem->DeleteAsset(BlackboardPath);
 		return MakeErrorJson(TEXT("Failed to create BehaviorTree asset at: ") + AssetPath);
 	}
 	Tree->BlackboardAsset = Blackboard;
 
-	if (UEditorAssetSubsystem* AssetSubsystem = GEditor ? GEditor->GetEditorSubsystem<UEditorAssetSubsystem>() : nullptr)
+	if (!AssetSubsystem->SaveLoadedAsset(Blackboard, false) || !AssetSubsystem->SaveLoadedAsset(Tree, false))
 	{
-		AssetSubsystem->SaveLoadedAsset(Blackboard, false);
-		AssetSubsystem->SaveLoadedAsset(Tree, false);
-	}
-	else
-	{
-		return MakeErrorJson(TEXT("EditorAssetSubsystem unavailable; assets created but not saved: ") + AssetPath);
+		// A silent save failure reports ok:true for assets that are gone after a
+		// restart: drop the pair and report the failure instead.
+		AssetSubsystem->DeleteAsset(AssetPath);
+		AssetSubsystem->DeleteAsset(BlackboardPath);
+		return MakeErrorJson(TEXT("created but failed to save; nothing was kept: ") + AssetPath);
 	}
 
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -1220,7 +1300,12 @@ FString UBTForgeLibrary::ValidateBehaviorTree(const FString& TreeJson, const FSt
 
 	UBlackboardData* Blackboard = NewObject<UBlackboardData>(GetTransientPackage());
 	TSet<FName> KnownBlackboardKeys;
-	const TArray<TSharedPtr<FJsonValue>>& KeySpecs = BlackboardSpec->GetArrayField(TEXT("keys"));
+	const TArray<TSharedPtr<FJsonValue>>* RawKeySpecs = nullptr;
+	if (!BlackboardSpec->TryGetArrayField(TEXT("keys"), RawKeySpecs) || RawKeySpecs == nullptr)
+	{
+		return MakeErrorJson(TEXT("BlackboardJson.keys: expected an array of {name,type} objects"));
+	}
+	const TArray<TSharedPtr<FJsonValue>>& KeySpecs = *RawKeySpecs;
 	for (int32 KeyIndex = 0; KeyIndex < KeySpecs.Num(); ++KeyIndex)
 	{
 		const TSharedPtr<FJsonObject>* KeyObject = nullptr;

@@ -183,10 +183,6 @@ namespace
 		TArray<TSharedPtr<FJsonValue>> Found;
 		for (const FAssetData& AssetData : BlueprintAssets)
 		{
-			if (Found.Num() >= MaxEntriesPerSection)
-			{
-				break;
-			}
 			FString NativeParentPath;
 			FString GeneratedClassPath;
 			if (!AssetData.GetTagValue(FBlueprintTags::NativeParentClassPath, NativeParentPath)
@@ -221,7 +217,9 @@ namespace
 			Found.Add(MakeShared<FJsonValueObject>(Entry));
 		}
 
-		// AssetRegistry order is not guaranteed; sort for deterministic output.
+		// AssetRegistry order is not guaranteed; sort for deterministic output. The
+		// section cap is applied *after* sorting: cutting first made "the same project
+		// twice returns the same catalog" depend on registry iteration order.
 		Found.Sort([](const TSharedPtr<FJsonValue>& A, const TSharedPtr<FJsonValue>& B)
 		{
 			const TSharedPtr<FJsonObject> ObjectA = A.IsValid() ? A->AsObject() : nullptr;
@@ -230,6 +228,10 @@ namespace
 			const FString NameB = ObjectB.IsValid() ? ObjectB->GetStringField(TEXT("name")) : FString();
 			return NameA < NameB;
 		});
+		if (Found.Num() > MaxEntriesPerSection)
+		{
+			Found.SetNum(MaxEntriesPerSection);
+		}
 		OutEntries.Append(Found);
 	}
 
@@ -270,17 +272,24 @@ FString UBTForgeCatalogLibrary::GetCapabilityCatalog(const FString& SectionJson)
 	{
 		TSharedPtr<FJsonObject> SectionObject;
 		const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(SectionJson);
-		if (FJsonSerializer::Deserialize(Reader, SectionObject) && SectionObject.IsValid())
+		if (!FJsonSerializer::Deserialize(Reader, SectionObject) || !SectionObject.IsValid())
 		{
-			FString Section;
-			if (SectionObject->TryGetStringField(TEXT("section"), Section))
+			// Falling back to "everything" hid a typo behind a giant payload that the
+			// caller believed was filtered.
+			return MakeErrorJson(TEXT("SectionJson is not valid JSON; expected {\"section\":\"all\"|\"bt\"|\"eqs\"}"));
+		}
+		FString Section;
+		if (SectionObject->HasField(TEXT("section")) && !SectionObject->TryGetStringField(TEXT("section"), Section))
+		{
+			return MakeErrorJson(TEXT("SectionJson.section: expected a string (all|bt|eqs)"));
+		}
+		if (!Section.IsEmpty())
+		{
+			bIncludeBT = Section.Equals(TEXT("all"), ESearchCase::IgnoreCase) || Section.Equals(TEXT("bt"), ESearchCase::IgnoreCase);
+			bIncludeEQS = Section.Equals(TEXT("all"), ESearchCase::IgnoreCase) || Section.Equals(TEXT("eqs"), ESearchCase::IgnoreCase);
+			if (!bIncludeBT && !bIncludeEQS)
 			{
-				bIncludeBT = Section.Equals(TEXT("all"), ESearchCase::IgnoreCase) || Section.Equals(TEXT("bt"), ESearchCase::IgnoreCase);
-				bIncludeEQS = Section.Equals(TEXT("all"), ESearchCase::IgnoreCase) || Section.Equals(TEXT("eqs"), ESearchCase::IgnoreCase);
-				if (!bIncludeBT && !bIncludeEQS)
-				{
-					return MakeErrorJson(TEXT("unknown section '") + Section + TEXT("'. Allowed: all, bt, eqs"));
-				}
+				return MakeErrorJson(TEXT("unknown section '") + Section + TEXT("'. Allowed: all, bt, eqs"));
 			}
 		}
 	}
@@ -337,11 +346,16 @@ FString UBTForgeCatalogLibrary::GetCapabilityCatalog(const FString& SectionJson)
 		TArray<TSharedPtr<FJsonValue>> Queries;
 		for (const FAssetData& AssetData : QueryAssets)
 		{
-			if (Queries.Num() >= MaxEntriesPerSection)
-			{
-				break;
-			}
 			Queries.Add(MakeShared<FJsonValueString>(AssetData.GetObjectPathString()));
+		}
+		// Same rule as the Blueprint section: sort first, cap second.
+		Queries.Sort([](const TSharedPtr<FJsonValue>& A, const TSharedPtr<FJsonValue>& B)
+		{
+			return A->AsString() < B->AsString();
+		});
+		if (Queries.Num() > MaxEntriesPerSection)
+		{
+			Queries.SetNum(MaxEntriesPerSection);
 		}
 		EQS->SetArrayField(TEXT("queries"), Queries);
 

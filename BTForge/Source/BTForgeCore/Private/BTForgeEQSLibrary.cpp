@@ -258,7 +258,11 @@ namespace
 			return true;
 		}
 
-		if (CastField<FByteProperty>(Property) != nullptr || CastField<FEnumProperty>(Property) != nullptr)
+		// A plain uint8 property (no enum backing it) is a *number*, not an enum: only
+		// route to the enum writer when the byte property actually declares an enum,
+		// otherwise the value could never be written at all.
+		const FByteProperty* ByteProperty = CastField<FByteProperty>(Property);
+		if ((ByteProperty != nullptr && ByteProperty->Enum != nullptr) || CastField<FEnumProperty>(Property) != nullptr)
 		{
 			return WriteEnumProperty(Property, DataPtr, ActualValue, Path, OutError);
 		}
@@ -490,8 +494,15 @@ namespace
 			return false;
 		}
 		const TSharedPtr<FJsonObject>* ParamsJson = nullptr;
-		if ((*GeneratorJson)->TryGetObjectField(TEXT("params"), ParamsJson) && ParamsJson->IsValid())
+		if ((*GeneratorJson)->HasField(TEXT("params")))
 		{
+			// Present but not an object is a spec error: silently dropping it would write
+			// generator defaults and still report ok.
+			if (!(*GeneratorJson)->TryGetObjectField(TEXT("params"), ParamsJson) || ParamsJson == nullptr || !ParamsJson->IsValid())
+			{
+				OutError = FString::Printf(TEXT("%s.generator.params: expected an object"), *OptionPath);
+				return false;
+			}
 			OutOption.Generator.Params = *ParamsJson;
 		}
 
@@ -518,8 +529,13 @@ namespace
 					OutError = FString::Printf(TEXT("%s.tests[%d].type: %s"), *OptionPath, TestIndex, *OutError);
 					return false;
 				}
-				if ((*TestJson)->TryGetObjectField(TEXT("params"), ParamsJson) && ParamsJson->IsValid())
+				if ((*TestJson)->HasField(TEXT("params")))
 				{
+					if (!(*TestJson)->TryGetObjectField(TEXT("params"), ParamsJson) || ParamsJson == nullptr || !ParamsJson->IsValid())
+					{
+						OutError = FString::Printf(TEXT("%s.tests[%d].params: expected an object"), *OptionPath, TestIndex);
+						return false;
+					}
 					Test.Params = *ParamsJson;
 				}
 				OutOption.Tests.Add(Test);
@@ -816,30 +832,33 @@ FString UBTForgeEQSLibrary::CreateEQSAsset(const FString& AssetPath, const FStri
 	}
 
 	FAssetToolsModule& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools"));
+	UEditorAssetSubsystem* AssetSubsystem = GEditor ? GEditor->GetEditorSubsystem<UEditorAssetSubsystem>() : nullptr;
+	if (AssetSubsystem == nullptr)
+	{
+		// Without the subsystem there is neither a save nor a cleanup path: bail out
+		// before creating anything instead of leaking an unsaved asset.
+		return MakeErrorJson(TEXT("EditorAssetSubsystem unavailable; nothing was created: ") + AssetPath);
+	}
+
 	UEnvQuery* Query = Cast<UEnvQuery>(AssetTools.Get().CreateAsset(AssetName, PackagePath, UEnvQuery::StaticClass(), nullptr));
 	if (Query == nullptr)
 	{
 		return MakeErrorJson(TEXT("Failed to create EQS asset at: ") + AssetPath);
 	}
 
-	UEditorAssetSubsystem* AssetSubsystem = GEditor ? GEditor->GetEditorSubsystem<UEditorAssetSubsystem>() : nullptr;
 	if (!BuildQuery(Query, OptionSpecs, bStripFromClientBuilds, Error))
 	{
-		if (AssetSubsystem != nullptr)
-		{
-			AssetSubsystem->DeleteAsset(AssetPath);
-		}
+		AssetSubsystem->DeleteAsset(AssetPath);
 		return MakeErrorJson(Error);
-	}
-	if (AssetSubsystem == nullptr)
-	{
-		return MakeErrorJson(TEXT("EditorAssetSubsystem unavailable; asset created but not saved: ") + AssetPath);
 	}
 
 	Query->MarkPackageDirty();
 	if (!AssetSubsystem->SaveLoadedAsset(Query, false))
 	{
-		return MakeErrorJson(TEXT("EQS query built in memory but saving failed: ") + AssetPath);
+		// Keep the "nothing is left behind" contract: a query that only lives in memory
+		// until the next restart is a half-created asset, not a success.
+		AssetSubsystem->DeleteAsset(AssetPath);
+		return MakeErrorJson(TEXT("EQS query built in memory but saving failed; nothing was kept: ") + AssetPath);
 	}
 
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();

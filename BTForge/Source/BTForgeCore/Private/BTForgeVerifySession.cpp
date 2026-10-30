@@ -60,8 +60,23 @@ namespace
 	{
 		const FString Dir = FPaths::ProjectSavedDir() / TEXT("BTForgeVerify");
 		FPlatformFileManager::Get().GetPlatformFile().CreateDirectoryTree(*Dir);
-		FFileHelper::SaveStringToFile(ResultJson, *(Dir / TEXT("last_result.json")),
-			FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+
+		// Write-then-rename, and one file per session: a poller must never read a
+		// half-written JSON, and a second verify run must not overwrite the evidence of
+		// the first (last_result.json stays as the "latest run" pointer for simple clients).
+		const FString TempPath = Dir / TEXT("last_result.tmp");
+		const FString SessionPath = Dir / FString::Printf(TEXT("result_%s.json"), *SessionId);
+		const FString LastPath = Dir / TEXT("last_result.json");
+		if (!FFileHelper::SaveStringToFile(ResultJson, *TempPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+		{
+			// Saved/ can be read-only or full; the HTTP path often goes dark around PIE
+			// teardown, so a silent loss here would leave the caller with nothing.
+			UE_LOG(LogBTForgeVerify, Warning, TEXT("could not write the verify result to %s (disk full or read-only Saved dir)"), *TempPath);
+			return;
+		}
+		IFileManager& FileManager = IFileManager::Get();
+		FileManager.Copy(*SessionPath, *TempPath, /*bReplace=*/true, /*bEvenIfReadOnly=*/true);
+		FileManager.Move(*LastPath, *TempPath, /*bReplace=*/true, /*bEvenIfReadOnly=*/true);
 	}
 
 	/** Escape a string for embedding inside a JSON string literal.
@@ -411,6 +426,44 @@ namespace
 		static FBTForgeLogCapture Capture;
 		return Capture;
 	}
+
+	/** Object-valued verify options: a real JSON object or a JSON string holding one.
+	 *  Anything else is an error - silently ignoring it would verify against the
+	 *  default values while the caller believes the option was applied. */
+	bool TryReadObjectOption(const TSharedPtr<FJsonObject>& Root, const TCHAR* Field,
+		TSharedPtr<FJsonObject>& Out, FString& OutError)
+	{
+		Out.Reset();
+		if (!Root.IsValid() || !Root->HasField(Field))
+		{
+			return true;
+		}
+		const TSharedPtr<FJsonValue>* Value = Root->Values.Find(Field);
+		if (Value == nullptr || !Value->IsValid())
+		{
+			OutError = FString::Printf(TEXT("%s: expected an object or a JSON string"), Field);
+			return false;
+		}
+		FString Text;
+		if ((*Value)->TryGetString(Text))
+		{
+			const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Text);
+			if (!FJsonSerializer::Deserialize(Reader, Out) || !Out.IsValid())
+			{
+				OutError = FString::Printf(TEXT("%s: string payload is not a JSON object"), Field);
+				return false;
+			}
+			return true;
+		}
+		const TSharedPtr<FJsonObject>* Object = nullptr;
+		if (!Root->TryGetObjectField(Field, Object) || Object == nullptr || !Object->IsValid())
+		{
+			OutError = FString::Printf(TEXT("%s: expected an object or a JSON string"), Field);
+			return false;
+		}
+		Out = *Object;
+		return true;
+	}
 }
 
 // ---------------------------------------------------------------- options
@@ -498,9 +551,12 @@ bool FBTForgeVerifyOptions::Parse(const FString& OptionsJson, FString& OutError)
 		MinPawnDisplacement = Number;
 	}
 	ExpectedActiveTask = Root->HasField(TEXT("expectedActiveTask")) ? Root->GetStringField(TEXT("expectedActiveTask")) : FString();
-	if (Root->HasField(TEXT("blackboardInit")) && Root->GetObjectField(TEXT("blackboardInit")).IsValid())
+	// Object-valued options accept a real object or a JSON string, and reject anything
+	// else: the MCP layer passes user JSON through as text, but a caller typing
+	// "blackboardInit": "x" must not silently verify against the default key values.
+	if (!TryReadObjectOption(Root, TEXT("blackboardInit"), BlackboardInit, OutError))
 	{
-		BlackboardInit = Root->GetObjectField(TEXT("blackboardInit"));
+		return false;
 	}
 	QueryRunMode = Root->HasField(TEXT("queryRunMode")) ? Root->GetStringField(TEXT("queryRunMode")) : FString();
 	BareGameMode = true;
@@ -514,9 +570,9 @@ bool FBTForgeVerifyOptions::Parse(const FString& OptionsJson, FString& OutError)
 	{
 		Root->TryGetBoolField(TEXT("fixturePawn"), FixturePawn);
 	}
-	if (Root->HasField(TEXT("queryParams")) && Root->GetObjectField(TEXT("queryParams")).IsValid())
+	if (!TryReadObjectOption(Root, TEXT("queryParams"), QueryParams, OutError))
 	{
-		QueryParams = Root->GetObjectField(TEXT("queryParams"));
+		return false;
 	}
 	return true;
 }
@@ -1284,6 +1340,21 @@ bool FBTForgeVerifyManager::Tick(float DeltaTime)
 	UBehaviorTreeComponent* BTComponent = M.Session.BTComp.Get();
 	if (BTComponent == nullptr)
 	{
+		// The fixture's component can vanish while the session is Running: a task
+		// destroyed its owner, the controller was removed, or the world was swapped
+		// without an EndPIE broadcast. Waiting forever would wedge the manager - this
+		// ticker is the only thing that can end the session, so every later
+		// start_verify would be refused with "another verify session is in flight"
+		// until the editor restarts. Give the fixture a grace window, then fail.
+		constexpr double FixtureGraceSec = 5.0;
+		if (M.Session.Options.Kind == TEXT("bt")
+			&& M.Session.State == FBTForgeVerifySession::EState::Running
+			&& (Now - M.Session.PIEStartTime) > FixtureGraceSec)
+		{
+			M.Session.TickHandle.Reset();
+			M.AbortToIdle(TEXT("fixture behavior tree component disappeared before the tree could be sampled"));
+			return false;
+		}
 		return true;
 	}
 	const double Elapsed = Now - M.Session.TreeStartTime;
@@ -1470,6 +1541,21 @@ void FBTForgeVerifyManager::FinishSession(const FString& Error)
 void FBTForgeVerifyManager::AbortToIdle(const FString& Error)
 {
 	CaptureLog(false);
+	// A request that "timed out" may still be queued (long map load, modal dialog):
+	// without cancelling it the PIE session starts *after* failure was reported, with
+	// no fixture and no owner, and every later start_verify is refused with
+	// "PIE already running". Shutdown() cancels for the same reason.
+	//
+	// Only when nothing is playing, though: the engine keeps the "request queued"
+	// flag set for a while after the session actually started, so cancelling on that
+	// flag alone tears down a live PIE mid-frame (observed as a TOptional assertion
+	// inside the editor tick).
+	if (GUnrealEd && Session.State == FBTForgeVerifySession::EState::RequestingPIE
+		&& !GUnrealEd->IsPlayingSessionInEditor()
+		&& GUnrealEd->IsPlaySessionRequestQueued())
+	{
+		GUnrealEd->CancelRequestPlaySession();
+	}
 	if (GUnrealEd && GUnrealEd->IsPlayingSessionInEditor())
 	{
 		GUnrealEd->RequestEndPlayMap();
@@ -1479,9 +1565,14 @@ void FBTForgeVerifyManager::AbortToIdle(const FString& Error)
 
 	Session.Error = Error;
 	Session.State = FBTForgeVerifySession::EState::Failed;
+	// The terminal contract says a result always carries checks[]; an abort used to
+	// report an empty list, which read as "nothing was checked" instead of "this failed".
+	FBTForgeCheckList Checks;
+	Checks.Add(false, TEXT("verify_started"), Error);
 	Session.ResultJson = FString::Printf(
-		TEXT("{\"ok\":true,\"sessionId\":\"%s\",\"status\":\"failed\",\"kind\":\"%s\",\"pass\":false,\"error\":\"%s\",\"checks\":[],\"logErrors\":%s}"),
+		TEXT("{\"ok\":true,\"sessionId\":\"%s\",\"status\":\"failed\",\"kind\":\"%s\",\"pass\":false,\"error\":\"%s\",\"checks\":[%s],\"checksPassed\":%d,\"checksTotal\":%d,\"logErrors\":%s}"),
 		*Session.SessionId, *JsonEscape(Session.Options.Kind), *JsonEscape(Error),
+		*Checks.Join(), Checks.Passed, Checks.Total,
 		*JsonStringArray(Session.LogErrors));
 	SaveResultToDisk(Session.SessionId, Session.ResultJson);
 	FHttpServerModule::Get().StartAllListeners();

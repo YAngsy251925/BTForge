@@ -15,6 +15,8 @@
 #include "EnvironmentQuery/EnvQueryTest.h"
 #include "GenericPlatform/GenericPlatformMisc.h"
 #include "Interfaces/IPluginManager.h"
+#include "Interfaces/IProjectManager.h"
+#include "ProjectDescriptor.h"
 #include "Misc/EngineVersion.h"
 #include "Misc/PackageName.h"
 #include "ModuleDescriptor.h"
@@ -133,7 +135,32 @@ namespace
 			}
 		}
 
-		if (!Info.bKnown && IsWellKnownEditorModule(ModuleName))
+		// Project modules live in the .uproject descriptor, not in any plugin, so a
+	// Type=Editor project module used to be classified as a runtime module and the
+	// cook verdict passed for code that a game build cannot load.
+	if (!Info.bKnown)
+	{
+		if (const FProjectDescriptor* Project = IProjectManager::Get().GetCurrentProject())
+		{
+			for (const FModuleDescriptor& Module : Project->Modules)
+			{
+				if (Module.Name.ToString() != ModuleName)
+				{
+					continue;
+				}
+				Info.bKnown = true;
+				const bool bEditorHost = Module.Type == EHostType::Editor || Module.Type == EHostType::EditorNoCommandlet;
+				const bool bGameTargetAllowed = Module.TargetAllowList.Num() == 0
+					|| Module.TargetAllowList.Contains(EBuildTargetType::Game);
+				Info.bEditorOnly = bEditorHost || !bGameTargetAllowed;
+				Info.Why = bEditorHost ? TEXT("project module declared Type=Editor")
+					: (bGameTargetAllowed ? FString() : TEXT("project module TargetAllowList excludes Game"));
+				break;
+			}
+		}
+	}
+
+	if (!Info.bKnown && IsWellKnownEditorModule(ModuleName))
 		{
 			Info.bEditorOnly = true;
 			Info.Why = TEXT("built-in editor-only module");
@@ -305,10 +332,13 @@ namespace
 				return Verdict;
 			}
 
+			// Report the disk state for every content reference, loaded or not. A "resolved"
+			// reference can still have no package behind it (transient CDO, in-memory
+			// asset) and callers read existsOnDisk as "is there a file for this path".
+			const FString PackageName = PackageNameOf(Path);
+			Verdict.bExistsOnDisk = !PackageName.IsEmpty() && FPackageName::DoesPackageExist(PackageName);
 			if (!Verdict.bResolved)
 			{
-				const FString PackageName = PackageNameOf(Path);
-				Verdict.bExistsOnDisk = !PackageName.IsEmpty() && FPackageName::DoesPackageExist(PackageName);
 				if (!Verdict.bExistsOnDisk)
 				{
 					Verdict.Severity = ERefSeverity::Error;
@@ -827,6 +857,9 @@ FString UBTForgeReferenceLibrary::InspectReferences(const FString& RequestJson)
 		if (!Verdict.Module.IsEmpty()) { RefObject->SetStringField(TEXT("module"), Verdict.Module); }
 		if (!Verdict.Plugin.IsEmpty()) { RefObject->SetStringField(TEXT("plugin"), Verdict.Plugin); }
 		RefObject->SetBoolField(TEXT("consumableByGameBuild"), Verdict.bCookSafe);
+		// Documented field name (BTForgeReferenceLibrary.h) — same value, so consumers
+		// reading either spelling get the cook verdict instead of an empty field.
+		RefObject->SetBoolField(TEXT("cookSafe"), Verdict.bCookSafe);
 		RefObject->SetBoolField(TEXT("editorOnly"), Verdict.bEditorOnly);
 		RefObject->SetBoolField(TEXT("blueprint"), Verdict.bBlueprint);
 		RefObject->SetBoolField(TEXT("resolved"), Verdict.bResolved);
@@ -854,6 +887,20 @@ FString UBTForgeReferenceLibrary::InspectReferences(const FString& RequestJson)
 		}
 	}
 
+	// The cap is a safety valve for cyclic graphs, not a report size: silently dropping
+	// the tail used to let a large tree report verdict "ok" while most of it was never
+	// inspected. Say it out loud and downgrade the verdict.
+	const bool bTruncated = Classified.Num() >= MaxRefs;
+	if (bTruncated && ErrorCount == 0)
+	{
+		++WarningCount;
+		TSharedRef<FJsonObject> TruncationWarning = MakeShared<FJsonObject>();
+		TruncationWarning->SetStringField(TEXT("jsonPath"), TEXT("$"));
+		TruncationWarning->SetStringField(TEXT("reason"),
+			FString::Printf(TEXT("reference list truncated at %d entries; the verdict only covers what was scanned"), MaxRefs));
+		WarningEntries.Add(MakeShared<FJsonValueObject>(TruncationWarning));
+	}
+
 	const FString VerdictName = ErrorCount > 0 ? TEXT("fail") : (WarningCount > 0 ? TEXT("warn") : TEXT("ok"));
 
 	TSharedRef<FJsonObject> Summary = MakeShared<FJsonObject>();
@@ -861,6 +908,8 @@ FString UBTForgeReferenceLibrary::InspectReferences(const FString& RequestJson)
 	Summary->SetNumberField(TEXT("ignoredTransient"), IgnoredTransient);
 	Summary->SetNumberField(TEXT("errors"), ErrorCount);
 	Summary->SetNumberField(TEXT("warnings"), WarningCount);
+	Summary->SetBoolField(TEXT("truncated"), bTruncated);
+	Summary->SetNumberField(TEXT("maxRefs"), MaxRefs);
 
 	TSharedRef<FJsonObject> DomainObject = MakeShared<FJsonObject>();
 	{

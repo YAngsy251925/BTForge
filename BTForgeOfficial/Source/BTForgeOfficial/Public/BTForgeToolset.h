@@ -40,13 +40,21 @@ public:
 	 *
 	 * Tree JSON (the root object), e.g.:
 	 *  {"type":"Selector","name":"Root","children":[
-	 *    {"type":"Sequence","children":[
-	 *      {"type":"Wait","name":"Pause","params":{"WaitTime":2.0,"RandomDeviation":1.0}}]},
+	 *    {"type":"Sequence","services":[{"type":"RunEQS","params":{"EQSRequest":{...}}}],"children":[
+	 *      {"type":"RunEQS","params":{"BlackboardKey":"MoveGoal","EQSRequest":{"QueryTemplate":"/Game/AI/EQS_FindTarget","RunMode":"SingleResult"}}},
+	 *      {"type":"MoveTo","params":{"BlackboardKey":"MoveGoal","AcceptableRadius":50},
+	 *       "decorators":[{"type":"Blackboard","params":{"BlackboardKey":"HasTarget"}}]},
+	 *      {"type":"Wait","name":"Pause","params":{"WaitTime":2.0}}]},
 	 *    {"type":"Wait","params":{"WaitTime":5.0}}]}
 	 *
 	 * Rules: root must be Sequence/Selector; every composite needs a non-empty
 	 * "children" array; tasks take no children; unknown "type" or unknown param
 	 * names are rejected (wait params: WaitTime, RandomDeviation as numbers).
+	 * Composites accept "services":[{type,params}]; any child accepts
+	 * "decorators":[{type,params}] (several decorators combine as AND).
+	 * Any "type" may instead be a class path (/Game/Folder/Asset.Asset_C or
+	 * /Script/Module.Class); base class, abstract flag and blackboard keys are
+	 * validated, and asset references are loaded and type-checked.
 	 *
 	 * @param AssetPath Existing BT asset created by CreateBehaviorTreeAsset.
 	 * @param TreeJson   Root node object as above.
@@ -72,11 +80,11 @@ public:
 	 * discarded; errors carry the exact JSON path.
 	 *
 	 * @param TreeJson      Root node object (same syntax as BuildBehaviorTree).
-	 * @param BlackboardJson Optional {"keys":[...]} spec; pass "" for no keys.
+	 * @param BlackboardJson Optional {"keys":[...]} spec; defaults to no keys.
 	 * @return JSON {"ok":true,"nodeCount":N,"root":class,"blackboardKeys":[...]} or {"ok":false,"error":msg}
 	 */
 	UFUNCTION(meta = (AICallable), Category = "BTForge")
-	static FString ValidateBehaviorTree(const FString& TreeJson, const FString& BlackboardJson);
+	static FString ValidateBehaviorTree(const FString& TreeJson, const FString& BlackboardJson = TEXT("{\"keys\":[]}"));
 
 	/**
 	 * Create an EQS (UEnvQuery) asset from a JSON spec. Options are built from
@@ -122,11 +130,11 @@ public:
 	 * tests, plus spec type aliases. Call this before authoring a spec so class
 	 * paths are real instead of guessed. Read-only.
 	 *
-	 * @param SectionJson Optional {"section":"all"|"bt"|"eqs"}; pass "" for all.
+	 * @param SectionJson Optional {"section":"all"|"bt"|"eqs"}; defaults to all.
 	 * @return JSON {"ok":true,"engineVersion":...,"bt":{...},"eqs":{...}}
 	 */
 	UFUNCTION(meta = (AICallable), Category = "BTForge")
-	static FString GetCapabilityCatalog(const FString& SectionJson);
+	static FString GetCapabilityCatalog(const FString& SectionJson = TEXT("{}"));
 
 	/**
 	 * Runtime verification (M3): start an in-process PIE session and actually
@@ -196,9 +204,10 @@ public:
 	 * names in params resolve per-tree when the node is placed.
 	 *
 	 * @param AssetPath       Target blueprint asset, e.g. "/Game/AI/BTA_LogShot".
-	 * @param ParentClassPath Non-abstract UBTTaskNode/UBTService/UBTDecorator-derived
-	 *                        class path (/Script/... or /Game/..._C); recipes
-	 *                        additionally require the *BlueprintBase class.
+	 * @param ParentClassPath UBTTaskNode/UBTService/UBTDecorator-derived class path
+	 *                        (/Script/... or /Game/..._C). Abstract parents are allowed
+	 *                        (engine *BlueprintBase classes are abstract); what matters is
+	 *                        Blueprintability. Recipes require the *BlueprintBase class.
 	 * @param ParamsJson      {"PropertyName": value, ...} for the class defaults;
 	 *                        pass "" for engine defaults.
 	 * @param RecipeJson      Optional constrained event-graph recipe; pass "" for none.
