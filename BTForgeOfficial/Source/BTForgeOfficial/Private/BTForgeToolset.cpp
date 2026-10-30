@@ -3,6 +3,7 @@
 #include "BTForgeCatalogLibrary.h"
 #include "BTForgeEQSLibrary.h"
 #include "BTForgeLibrary.h"
+#include "BTForgeReferenceLibrary.h"
 #include "BTForgeVerifyLibrary.h"
 
 FString UBTForgeToolset::CreateBehaviorTreeAsset(const FString& AssetPath, const FString& BlackboardJson)
@@ -53,4 +54,9 @@ FString UBTForgeToolset::StartVerify(const FString& OptionsJson)
 FString UBTForgeToolset::GetVerifyResult(const FString& SessionId)
 {
 	return UBTForgeVerifyLibrary::GetVerifyResult(SessionId);
+}
+
+FString UBTForgeToolset::InspectReferences(const FString& RequestJson)
+{
+	return UBTForgeReferenceLibrary::InspectReferences(RequestJson);
 }

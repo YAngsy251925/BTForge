@@ -35,6 +35,7 @@ Experimental plugins are `NoRedist` and cannot be redistributed).
 | `get_capability_catalog` | `...GetCapabilityCatalog` | Inventory of node classes / EQS assets / contexts |
 | `start_verify` | `...StartVerify` | Run a generated BT/EQS asset in a real in-process PIE session |
 | `get_verify_result` | `...GetVerifyResult` | Poll that session: `pass` + `checks[]` + timeline + final state |
+| `inspect_references` | `...InspectReferences` | Reference / content-domain report: can every reference survive a cook? |
 
 Every tool returns JSON: `{"ok":true,...}` or `{"ok":false,"error":<message
 with a JSON path>}` so the agent can self-correct. Node whitelist (L2):
@@ -127,15 +128,67 @@ Result contract - one source of truth, no string sniffing:
 | `pass` | boolean: the AND of every `checks[]` entry |
 | `status` | `done` only when `pass` is `true`, otherwise `failed` |
 | `checksPassed` / `checksTotal` | counts behind `pass` (bt and eqs) |
-| `checks[]` | `{name,pass,detail}`: `pie_started`, `running_after_start`, `finished_gracefully`, `finished_in_window`, `expected_active_task_seen`, `kept_running_for_duration`, `no_log_errors` |
+| `checks[]` | `{name,pass,detail}`: `pie_started`, `running_after_start`, `finished_gracefully`, `finished_in_window`, `expected_active_task_seen`, `kept_running_for_duration`, `pawn_moved` (when `expectedMinPawnDisplacement` is set), `no_log_errors` |
 | `samples[]` | `{t,running,tasks}` timeline from `t=0` |
 | `durationSec`, `frameMaxSec` | measured run length and worst frame seen while running |
+| `pawnDisplacement` | how far the fixture pawn moved between tree start and finish (bt) |
 | `blackboardFinal` / `itemCount`,`topScores` | final blackboard values (bt) or query result (eqs) |
+| `logErrors`, `logWarnings` | captured log lines (warnings are reported, not failed on) |
 | `error` | failure reason; also present when `pass` is false because a check failed |
+
+Optional `expectedMinPawnDisplacement` (px) turns "did the movement chain actually
+run" into a check instead of something the caller has to eyeball:
+`{"expectedMinPawnDisplacement": 300}` adds `pawn_moved` and fails the run when the
+pawn ends up closer than that to where the tree started.
 
 Results are also written to `Saved/BTForgeVerify/last_result.json` (PIE teardown
 turns the shared HTTP listeners off globally, so file polling survives the
 transition).
+
+## Reference / content-domain policy (M4)
+
+`inspect_references` answers one question before (or after) anything is written:
+*does every object reference in this asset resolve, and can it survive a cook?*
+It is read-only and works in two modes:
+
+```json
+{"assetPath":"/Game/AI/BT_Sentinel"}
+{"kind":"bt","treeJson":{...},"blackboardJson":{...}}
+{"kind":"eqs","queryJson":{...}}
+```
+
+- **asset mode** walks the real objects (BT node tree with services/decorators,
+  blackboard keys, EQS options/generators/tests, nested struct params) and reports
+  each reference with a JSON path, its kind, domain, module, plugin and verdict.
+- **spec mode** scans a spec for object-path strings, so the same policy can gate a
+  spec *before* `create_*` writes anything.
+
+Verdict (mirrors the verify contract): `fail` when any reference is an error
+(missing package, transient/reinstanced object, class from an editor-only module),
+`warn` for engine content and unmounted plugin content roots, `ok` otherwise.
+
+Reference fields: `jsonPath`, `ref`, `kind` (`class`/`object`/`soft-class`/
+`soft-object`), `domain` (`native-module`, `project-content`, `plugin-content`,
+`engine-content`), `module`, `plugin`, `editorOnly`, `blueprint`, `resolved`,
+`existsOnDisk`, `consumableByGameBuild`, `reason`. Editor-only detection uses the
+plugin descriptors (`Type=Editor` / `TargetAllowList` without `Game`), the
+cooker's own `IsEditorOnlyObject`, and a documented list of built-in editor
+modules.
+
+## Golden path (M4)
+
+`python Tools/mcp_m4_goldenpath.py` runs the whole agent loop deterministically:
+catalog → dry-run → create EQS → inspect → reference policy → create BT (with a
+deliberately broken build, then the repair) → inspect → reference policy → run in
+PIE → assert `pass`, a real goal value written by RunEQS, and (with
+`--map ... --expect-movement N`) that the fixture pawn actually moved to the
+EQS-filtered goal. `--official` runs it through Epic's endpoint.
+
+```bash
+python Tools/mcp_m4_goldenpath.py
+python Tools/mcp_m4_goldenpath.py --official
+python Tools/mcp_m4_goldenpath.py --map /ShooterCore/Maps/L_ShooterGym --expect-movement 300
+```
 
 ## Using the built-in server (all engine versions)
 
@@ -189,7 +242,10 @@ python Tools/mcp_m1m2_smoke.py           # EQS builder + catalog + validate-only
 python Tools/mcp_m1m2_smoke.py --official # same suite through Epic's :8000 (5.8 + BTForgeOfficial)
 python Tools/mcp_m3_smoke.py             # runtime verification in PIE (35 checks, :8090)
 python Tools/mcp_m3_smoke.py --official  # same suite through Epic's :8000
-python Tools/mcp_m3_smoke.py --map /ShooterMaps/Maps/L_ShooterGym  # EQS on a real, nav-meshed map
+python Tools/mcp_m3_smoke.py --map /ShooterCore/Maps/L_ShooterGym  # EQS on a real, nav-meshed map
+python Tools/mcp_m4_goldenpath.py        # M4 golden path (catalog -> build -> references -> PIE)
+python Tools/mcp_m4_goldenpath.py --official
+python Tools/mcp_m4_goldenpath.py --map /ShooterCore/Maps/L_ShooterGym --expect-movement 300
 ```
 
 The BT smoke script still uses fixed asset names for its base suite; pass
@@ -198,10 +254,16 @@ contains a previous run's assets.
 
 ## Version notes
 
-- 2.2.1 (current): M3 runtime verification landed in the repository (the 2.2.0
-  tag shipped documentation only), plus the review fixes: `pass` is the AND of
-  `checks[]` and `status` derives from it, `PostPIEStarted`'s boolean is treated
-  as `bIsSimulatingInEditor` (start failures are detected by polling the play
+- 2.3.0 (current, M4): `inspect_references` (reference / content-domain policy),
+  `expectedMinPawnDisplacement` + `pawnDisplacement`, `logWarnings` in the verify
+  result, map-path validation and a `stale_pie_state` recovery for a PIE request
+  that failed to create its world, `FBlackboardKeySelector` type/id resolution
+  when a tree is built (so `RunEQS` results store reliably), and
+  `Tools/mcp_m4_goldenpath.py`.
+- 2.2.1: M3 runtime verification landed in the repository (the 2.2.0 tag shipped
+  documentation only), plus the review fixes: `pass` is the AND of `checks[]` and
+  `status` derives from it, `PostPIEStarted`'s boolean is treated as
+  `bIsSimulatingInEditor` (start failures are detected by polling the play
   session), EQS reports `NumValidItems` and unregisters its external query,
   blackboard initialization is type-directed, and the fixture includes a pawn.
 - 5.4–5.8: `BTForgeRuntime` + `BTForgeCore` + `BTForgeMCP` (zero engine-version

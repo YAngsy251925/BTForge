@@ -35,6 +35,7 @@
 #include "Logging/LogVerbosity.h"
 #include "Misc/DefaultValueHelper.h"
 #include "Misc/FileHelper.h"
+#include "Misc/PackageName.h"
 #include "Misc/OutputDevice.h"
 #include "Misc/Paths.h"
 #include "PlayInEditorDataTypes.h"
@@ -487,6 +488,15 @@ bool FBTForgeVerifyOptions::Parse(const FString& OptionsJson, FString& OutError)
 		}
 		ExpectedDurationSec = Number;
 	}
+	if (Root->HasField(TEXT("expectedMinPawnDisplacement")))
+	{
+		if (!Root->TryGetNumberField(TEXT("expectedMinPawnDisplacement"), Number) || Number < 0.0)
+		{
+			OutError = TEXT("expectedMinPawnDisplacement must be a number >= 0");
+			return false;
+		}
+		MinPawnDisplacement = Number;
+	}
 	ExpectedActiveTask = Root->HasField(TEXT("expectedActiveTask")) ? Root->GetStringField(TEXT("expectedActiveTask")) : FString();
 	if (Root->HasField(TEXT("blackboardInit")) && Root->GetObjectField(TEXT("blackboardInit")).IsValid())
 	{
@@ -544,6 +554,15 @@ FString FBTForgeVerifyManager::StartVerify(const FString& OptionsJson)
 		{
 			return TEXT("{\"ok\":false,\"error\":\"teardown_pending\",\"retry\":true,\"hint\":\"the previous verify session is still tearing its PIE session down; retry in a few frames\"}");
 		}
+		// A PIE request that failed to create its world (bad mapPath, asset errors)
+		// leaves the editor claiming a session with no PIE world. That state would
+		// otherwise block every future verify until the user presses Stop: clear the
+		// queued teardown and let the caller retry.
+		if (FindPIEWorld() == nullptr)
+		{
+			GUnrealEd->RequestEndPlayMap();
+			return TEXT("{\"ok\":false,\"error\":\"stale_pie_state\",\"retry\":true,\"hint\":\"the editor reports a PIE session but no PIE world exists (a failed start); the stale session was asked to end, retry shortly\"}");
+		}
 		return TEXT("{\"ok\":false,\"error\":\"a PIE/SIE session is already running; stop it before starting a verify session (BTForge only stops sessions it started itself)\"}");
 	}
 
@@ -571,6 +590,18 @@ FString FBTForgeVerifyManager::StartVerify(const FString& OptionsJson)
 	{
 		Session.Options.ResolvedMapPath = BareGameModeFallbackMap;
 		Session.Options.bMapAutoDefaulted = true;
+	}
+	// Validate the map before handing it to PIE: a bad path used to fail inside
+	// world creation, which leaves the editor claiming a live PIE session with no
+	// world and blocks every later verify.
+	if (!Session.Options.ResolvedMapPath.IsEmpty())
+	{
+		const FString MapPackage = FPackageName::ObjectPathToPackageName(Session.Options.ResolvedMapPath);
+		if (!FPackageName::DoesPackageExist(MapPackage))
+		{
+			return FString::Printf(TEXT("{\"ok\":false,\"error\":\"mapPath not found: %s\"}"),
+				*JsonEscape(Session.Options.ResolvedMapPath));
+		}
 	}
 
 	// Reset session state for this run.
@@ -991,6 +1022,13 @@ void FBTForgeVerifyManager::StartBTVerification()
 	Session.VerifyDeadline = Session.TreeStartTime + Session.Options.DurationSec + 5.0;
 	Session.bTreeStarted = false;
 	Session.bSawRunning = false;
+	// M4 golden path evidence: movement tasks can only be judged by where the
+	// fixture pawn ended up relative to where the tree started it.
+	if (const APawn* Pawn = Session.FixturePawn.Get())
+	{
+		Session.PawnStartLocation = Pawn->GetActorLocation();
+		Session.bPawnStartCaptured = true;
+	}
 
 	// OnTreeStarted is the authoritative "started" signal: StartTree executes the
 	// first task synchronously, so a tree that finishes immediately already reports
@@ -1340,6 +1378,28 @@ void FBTForgeVerifyManager::FinishSession(const FString& Error)
 		}
 	}
 
+	// M4 golden path: movement evidence. The fixture pawn's start position is
+	// captured right before StartTree, so a MoveTo/SmartObject chain can be judged
+	// by displacement instead of only by "the tree finished".
+	double PawnDisplacement = 0.0;
+	FVector PawnEndLocation = Session.PawnStartLocation;
+	if (const APawn* Pawn = Session.FixturePawn.Get())
+	{
+		PawnEndLocation = Pawn->GetActorLocation();
+		if (Session.bPawnStartCaptured)
+		{
+			PawnDisplacement = FVector::Dist(PawnEndLocation, Session.PawnStartLocation);
+		}
+	}
+	if (Session.Options.MinPawnDisplacement >= 0.0)
+	{
+		Checks.Add(PawnDisplacement >= Session.Options.MinPawnDisplacement, TEXT("pawn_moved"),
+			FString::Printf(TEXT("moved %.1f (expected >= %.1f), from (%.0f,%.0f,%.0f) to (%.0f,%.0f,%.0f)"),
+				PawnDisplacement, Session.Options.MinPawnDisplacement,
+				Session.PawnStartLocation.X, Session.PawnStartLocation.Y, Session.PawnStartLocation.Z,
+				PawnEndLocation.X, PawnEndLocation.Y, PawnEndLocation.Z));
+	}
+
 	Checks.Add(Session.LogErrors.Num() == 0, TEXT("no_log_errors"),
 		Session.LogErrors.Num() ? FString::Join(Session.LogErrors, TEXT(" | ")) : TEXT(""));
 
@@ -1376,9 +1436,9 @@ void FBTForgeVerifyManager::FinishSession(const FString& Error)
 	Session.ResultJson = FString::Printf(
 		TEXT("{\"ok\":true,\"sessionId\":\"%s\",\"status\":\"%s\",\"kind\":\"bt\",\"pass\":%s,")
 		TEXT("\"error\":\"%s\",\"checks\":[%s],\"checksPassed\":%d,\"checksTotal\":%d,\"samples\":[%s],")
-		TEXT("\"activeTasksSeen\":[%s],\"durationSec\":%.2f,\"frameMaxSec\":%.3f,")
+		TEXT("\"activeTasksSeen\":[%s],\"durationSec\":%.2f,\"frameMaxSec\":%.3f,\"pawnDisplacement\":%.1f,")
 		TEXT("\"mapPath\":\"%s\",\"fixture\":{\"controller\":%s,\"pawn\":%s},")
-		TEXT("\"blackboardFinal\":{%s},\"logErrors\":%s,\"logWarningsCount\":%d,\"elapsedSec\":%.2f}"),
+		TEXT("\"blackboardFinal\":{%s},\"logErrors\":%s,\"logWarnings\":%s,\"logWarningsCount\":%d,\"elapsedSec\":%.2f}"),
 		*Session.SessionId,
 		bPass ? TEXT("done") : TEXT("failed"),
 		bPass ? TEXT("true") : TEXT("false"),
@@ -1389,11 +1449,13 @@ void FBTForgeVerifyManager::FinishSession(const FString& Error)
 		*JsonStringArray(Session.ActiveTasksSeen.Array()),
 		Elapsed,
 		Session.MaxTickDelta,
+		PawnDisplacement,
 		*JsonEscape(Session.Options.ResolvedMapPath),
 		Session.FixtureController.IsValid() ? TEXT("true") : TEXT("false"),
 		Session.FixturePawn.IsValid() ? TEXT("true") : TEXT("false"),
 		*BlackboardFinal,
 		*JsonStringArray(Session.LogErrors),
+		*JsonStringArray(Session.LogWarnings),
 		Session.LogWarnings.Num(),
 		FPlatformTime::Seconds() - Session.RequestTime);
 

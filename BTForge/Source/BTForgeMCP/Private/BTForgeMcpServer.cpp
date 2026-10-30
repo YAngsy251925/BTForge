@@ -3,6 +3,7 @@
 #include "Async/Async.h"
 #include "BTForgeCatalogLibrary.h"
 #include "BTForgeEQSLibrary.h"
+#include "BTForgeReferenceLibrary.h"
 #include "BTForgeVerifyLibrary.h"
 #include "BTForgeLibrary.h"
 #include "Dom/JsonObject.h"
@@ -152,13 +153,18 @@ namespace
 			},
 			{
 				TEXT("start_verify"),
-				TEXT("Runtime verification (M3): start an in-process PIE session and actually run a generated asset. OptionsJson: {kind:\"bt\"|\"eqs\", assetPath, mapPath?, mode?(bt: SingleRun|Looped), durationSec?, expectedDurationSec?, toleranceSec?, expectedActiveTask?, blackboardInit?{key:value}, fixturePawn?(bt, default true), bareGameMode?(default true), gameModeClassPath?, queryRunMode?, queryParams?{name:number}}. Starts PIE with GameModeOverride=AGameModeBase (bareGameMode: mapPath defaults to /Engine/Maps/Templates/Template_Default because a Lyra map asserts on a bare GameMode), spawns an AIController + Pawn fixture, starts the tree (SingleRun finishes naturally; Looped must keep running for durationSec) or runs the EQS query synchronously, samples IsRunning/active tasks from t=0. Fails fast if a PIE/SIE session is already running. Returns {sessionId,status:pending,mapPath}; poll get_verify_result."),
+				TEXT("Runtime verification (M3): start an in-process PIE session and actually run a generated asset. OptionsJson: {kind:\"bt\"|\"eqs\", assetPath, mapPath?, mode?(bt: SingleRun|Looped), durationSec?, expectedDurationSec?, toleranceSec?, expectedActiveTask?, expectedMinPawnDisplacement?(bt, px), blackboardInit?{key:value}, fixturePawn?(bt, default true), bareGameMode?(default true), gameModeClassPath?, queryRunMode?, queryParams?{name:number}}. Starts PIE with GameModeOverride=AGameModeBase (bareGameMode: mapPath defaults to /Engine/Maps/Templates/Template_Default because a Lyra map asserts on a bare GameMode), spawns an AIController + Pawn fixture, starts the tree (SingleRun finishes naturally; Looped must keep running for durationSec) or runs the EQS query synchronously, samples IsRunning/active tasks from t=0. Fails fast if a PIE/SIE session is already running. Returns {sessionId,status:pending,mapPath}; poll get_verify_result."),
 				TEXT(R"json({"type":"object","properties":{"OptionsJson":{"type":["object","string"],"description":"Verification options as described."}},"required":["OptionsJson"]})json")
 			},
 			{
 				TEXT("get_verify_result"),
-				TEXT("Poll a runtime verification session started by start_verify. Returns {status:pending|running} until finished, then the full result: pass (top-level boolean = AND of every checks[] entry; status is done only when pass is true), checks[{name,pass,detail}] (pie_started, running_after_start, expected_active_task_seen, finished_gracefully, finished_in_window, kept_running_for_duration, no_log_errors), samples timeline (from t=0), activeTasksSeen, blackboardFinal (bt) or itemCount(=NumValidItems)/rawItemCount/itemType/topScores (eqs), logErrors list."),
+				TEXT("Poll a runtime verification session started by start_verify. Returns {status:pending|running} until finished, then the full result: pass (top-level boolean = AND of every checks[] entry; status is done only when pass is true), checks[{name,pass,detail}] (pie_started, running_after_start, expected_active_task_seen, finished_gracefully, finished_in_window, kept_running_for_duration, pawn_moved, no_log_errors), samples timeline (from t=0), activeTasksSeen, pawnDisplacement (bt), blackboardFinal (bt) or itemCount(=NumValidItems)/rawItemCount/itemType/topScores (eqs), logErrors list."),
 				TEXT(R"json({"type":"object","properties":{"SessionId":{"type":"string","description":"Session id returned by start_verify."}},"required":["SessionId"]})json")
+			},
+			{
+				TEXT("inspect_references"),
+				TEXT("Reference / content-domain policy (M4), read-only. Reports every object reference of a BT or EQS asset (or of a spec, before anything is written) with its domain (native module / project content / plugin content / engine content), module, plugin, blueprint flag, and whether it can exist in a cooked build. Returns verdict ok|warn|fail plus errors[]/warnings[] with JSON paths. Use it after build_* and before shipping, or on a spec to catch missing / editor-only references early. RequestJson: {\"assetPath\":\"/Game/AI/BT_X\"} for an existing asset, or {\"kind\":\"bt\",\"treeJson\":{...},\"blackboardJson\":{...}} / {\"kind\":\"eqs\",\"queryJson\":{...}} for a spec."),
+				TEXT(R"json({"type":"object","properties":{"RequestJson":{"type":["object","string"],"description":"{\"assetPath\":\"...\"} or {\"kind\":\"bt\",\"treeJson\":{...}} or {\"kind\":\"eqs\",\"queryJson\":{...}}"}},"required":["RequestJson"]})json")
 			},
 		};
 		return Tools;
@@ -276,6 +282,18 @@ namespace
 			}
 			LibraryResult = UBTForgeCatalogLibrary::GetCapabilityCatalog(SectionJson);
 		}
+		else if (ToolName == TEXT("inspect_references"))
+		{
+			// M4 reference / content-domain policy. Read-only; a "fail" verdict is
+			// still a successful tool call (data), so isError stays false.
+			FString RequestJson;
+			if (!GetToolArgAsJsonText(Args, TEXT("RequestJson"), RequestJson, ArgError))
+			{
+				return MakeToolErrorText(ArgError);
+			}
+			bOutIsToolError = false;
+			return UBTForgeReferenceLibrary::InspectReferences(RequestJson);
+		}
 		else if (ToolName == TEXT("start_verify") || ToolName == TEXT("get_verify_result"))
 		{
 			// M3 runtime verification. Includes UE 5.5 in the description because
@@ -346,7 +364,7 @@ namespace
 
 		TSharedRef<FJsonObject> ServerInfo = MakeShared<FJsonObject>();
 		ServerInfo->SetStringField(TEXT("name"), TEXT("BTForge"));
-		ServerInfo->SetStringField(TEXT("version"), TEXT("2.2.1"));
+		ServerInfo->SetStringField(TEXT("version"), TEXT("2.3.0"));
 
 		TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
 		Result->SetStringField(TEXT("protocolVersion"), Negotiated);

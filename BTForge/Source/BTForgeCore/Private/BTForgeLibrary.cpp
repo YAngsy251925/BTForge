@@ -651,8 +651,72 @@ namespace
 		return Node;
 	}
 
+	/** Resolve FBlackboardKeySelector fields (SelectedKeyType / SelectedKeyID) from the
+	 *  tree's blackboard. Writing the key name alone is not enough: runtime code that
+	 *  compares the selector's *type* (e.g. UBTTask_RunEQSQuery::OnQueryFinished ->
+	 *  UEnvQueryItemType::StoreInBlackboard) fails silently and the task reports a
+	 *  failed result even though the query produced items. Walks nested structs so
+	 *  FEQSParametrizedQueryExecutionRequest's inner selectors are covered too. */
+	void FixupKeySelectorsInStruct(UStruct* Struct, void* Data, const UBlackboardData* BlackboardAsset, int32 Depth)
+	{
+		if (Struct == nullptr || Data == nullptr || BlackboardAsset == nullptr || Depth > 4)
+		{
+			return;
+		}
+		const FNameProperty* NameProperty = CastField<FNameProperty>(Struct->FindPropertyByName(TEXT("SelectedKeyName")));
+		if (NameProperty != nullptr)
+		{
+			FClassProperty* TypeProperty = CastField<FClassProperty>(Struct->FindPropertyByName(TEXT("SelectedKeyType")));
+			FNumericProperty* IdProperty = CastField<FNumericProperty>(Struct->FindPropertyByName(TEXT("SelectedKeyID")));
+			const FName KeyName = NameProperty->GetPropertyValue(NameProperty->ContainerPtrToValuePtr<void>(Data));
+			if (!KeyName.IsNone())
+			{
+				const FBlackboard::FKey KeyId = BlackboardAsset->GetKeyID(KeyName);
+				if (KeyId != FBlackboard::InvalidKey && BlackboardAsset->Keys.IsValidIndex(KeyId))
+				{
+					const FBlackboardEntry& Entry = BlackboardAsset->Keys[KeyId];
+					if (TypeProperty != nullptr)
+					{
+						TypeProperty->SetObjectPropertyValue(TypeProperty->ContainerPtrToValuePtr<void>(Data),
+							Entry.KeyType != nullptr ? Entry.KeyType->GetClass() : nullptr);
+					}
+					if (IdProperty != nullptr)
+					{
+						IdProperty->SetIntPropertyValue(IdProperty->ContainerPtrToValuePtr<void>(Data), static_cast<int64>(static_cast<int32>(KeyId)));
+					}
+				}
+			}
+			return;
+		}
+		for (TFieldIterator<FProperty> It(Struct); It; ++It)
+		{
+			if (const FStructProperty* InnerStruct = CastField<FStructProperty>(*It))
+			{
+				FixupKeySelectorsInStruct(InnerStruct->Struct, InnerStruct->ContainerPtrToValuePtr<void>(Data), BlackboardAsset, Depth + 1);
+			}
+		}
+	}
+
+	void FixupKeySelectors(UObject* Node, const UBlackboardData* BlackboardAsset)
+	{
+		if (Node == nullptr || BlackboardAsset == nullptr)
+		{
+			return;
+		}
+		for (TFieldIterator<FProperty> It(Node->GetClass()); It; ++It)
+		{
+			if (const FStructProperty* StructProperty = CastField<FStructProperty>(*It))
+			{
+				FixupKeySelectorsInStruct(StructProperty->Struct, StructProperty->ContainerPtrToValuePtr<void>(Node), BlackboardAsset, 0);
+			}
+		}
+	}
+
 	void InitializeNodesRecursive(UBTNode* Node, UBehaviorTree* Tree)
 	{
+		// Key selectors must be fully resolved *before* InitializeFromAsset: nodes such
+		// as UBTTask_RunEQSQuery read the selector's type/id while initializing.
+		FixupKeySelectors(Node, Tree->BlackboardAsset);
 		Node->InitializeFromAsset(*Tree);
 		if (UBTCompositeNode* Composite = Cast<UBTCompositeNode>(Node))
 		{

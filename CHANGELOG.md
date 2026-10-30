@@ -3,6 +3,81 @@
 All notable changes to BT Forge are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.3.0] — 2026-10-30
+
+M4: the golden path end to end (catalog → spec → asset → references → runtime),
+plus a reference / content-domain policy that can gate a spec before anything is
+written. 11 MCP tools.
+
+### Added
+
+- **`inspect_references`** (both endpoints): a read-only reference and
+  content-domain report for a BT/EQS asset *or* a spec.
+  - asset mode walks the real objects — BT node trees with services and
+    decorators, blackboard keys (including key-type class references), EQS
+    options/generators/tests, and nested struct params — and reports each
+    reference with a JSON path;
+  - spec mode scans `treeJson` / `queryJson` / `blackboardJson` for object paths,
+    so missing or forbidden references are caught before `create_*` writes
+    anything.
+  - Each entry carries `kind`, `domain` (`native-module`, `project-content`,
+    `plugin-content`, `engine-content`), `module`, `plugin`, `editorOnly`,
+    `blueprint`, `resolved`, `existsOnDisk`, `consumableByGameBuild`, `reason`;
+    the report aggregates to `verdict` `ok|warn|fail` with `errors[]`/
+    `warnings[]` and `summary.byDomain`/`byModule`.
+  - Editor-only detection: plugin descriptors (`Type=Editor`, or a
+    `TargetAllowList` without `Game`), the cooker's `IsEditorOnlyObject`, and a
+    documented list of built-in editor modules. Transient editor-side defaults
+    (blackboard key filters) are counted as `ignoredTransient` instead of noise.
+- **Movement evidence in verification**: `expectedMinPawnDisplacement` turns
+  "did the movement chain actually run" into a `pawn_moved` check, and results
+  now report `pawnDisplacement` (fixture pawn start → end distance).
+- **`logWarnings`** array in the verify result (warnings are reported, never
+  failed on), alongside `logErrors`.
+- **`Tools/mcp_m4_goldenpath.py`**: the deterministic golden path — catalog
+  (class paths read from the catalog, never guessed), EQS dry-run, create,
+  inspect, reference policy, BT create, a deliberately broken build followed by
+  the repair, inspect, reference policy (asset + spec), PIE run with `pass` and a
+  real goal value, and (opt-in) a nav-meshed map phase that asserts the fixture
+  pawn moved to the EQS-filtered goal. Works on both endpoints.
+
+### Fixed
+
+- **`FBlackboardKeySelector` was written with the key name only**: key
+  type/id are what runtime code reads (`UBTTask_RunEQSQuery` ->
+  `StoreInBlackboard`, for example), so a tree built by BTForge could run a query
+  that produced items and still report a failed task. `InitializeNodesRecursive`
+  now resolves `SelectedKeyType`/`SelectedKeyID` from the tree's blackboard
+  before `InitializeFromAsset`.
+- **A bad `mapPath` wedged the editor**: an unloadable map made PIE fail inside
+  world creation, leaving `IsPlaySessionInProgress()` true with no PIE world and
+  blocking every later verify. `start_verify` validates the map package up front,
+  and a session with no PIE world is now reported as retryable
+  `stale_pie_state` (with a queued teardown) instead of "another PIE is running".
+- `start_verify` retry hints (`teardown_pending`, `stale_pie_state`) are handled
+  by the M3/M4 scripts, so back-to-back sessions no longer need a cooldown.
+
+### Verified
+
+- UE 5.8, built-in endpoint (`:8090`): M4 golden path **PASS** (22 checks, 29 with
+  the movement phase on `/ShooterCore/Maps/L_ShooterGym`), M3 suite **35/35**,
+  M1/M2 suite **35/35**, base suite PASS.
+- UE 5.8, official endpoint (`:8000`): M4 golden path **PASS** (11 tools
+  registered), M3 suite **35/35**.
+- UE 5.5 blank project: compiles with **zero changes**; M4 golden path **PASS**,
+  M3 suite **35/35**, M1/M2 suite **35/35**.
+
+### Known limitations (M4 scope)
+
+- Reference policy classifies engine modules from a documented list (built-in
+  editor modules have no runtime-readable host type); plugin modules use their
+  descriptors.
+- `inspect_behavior_tree` still dumps scalar params only — object references are
+  reported by `inspect_references` (which has precise JSON paths).
+- On a project map the run's `pass` can be false through `no_log_errors` because
+  the project's own game code logs errors during PIE; the M4 golden path asserts
+  movement evidence there and reports the project noise instead of hiding it.
+
 ## [2.2.1] — 2026-10-29
 
 Repository-completeness and review fixes for M3. The `v2.2.0` tag shipped

@@ -20,6 +20,10 @@ public class BTForgeCore : ModuleRules
 			"AssetTools",
 			"HTTPServer",
 			"Json",
+			// M4 reference policy: module host type (Runtime/Editor) comes from the
+			// plugin descriptors, so the report can tell cook-safe classes from
+			// editor-only ones.
+			"Projects",
 			"UnrealEd"
 		});
 	}

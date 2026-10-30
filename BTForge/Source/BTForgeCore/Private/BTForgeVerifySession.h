@@ -42,6 +42,7 @@ struct FBTForgeVerifyOptions
 	double StartDeadlineSec = 90.0; // Lyra maps can take a minute+ to bring up PIE
 	double ToleranceSec = 0.5;
 	double ExpectedDurationSec = -1.0; // -1 = not set
+	double MinPawnDisplacement = -1.0; // -1 = do not assert fixture pawn movement (M4 golden path)
 	FString ExpectedActiveTask;   // optional substring match against DescribeActiveTasks
 	TSharedPtr<FJsonObject> BlackboardInit; // optional {"Key": value,...}
 	bool BareGameMode = true;     // override PIE GameMode with bare AGameModeBase
@@ -77,6 +78,9 @@ struct FBTForgeVerifySession
 	TWeakObjectPtr<APawn> FixturePawn;
 	TWeakObjectPtr<UBehaviorTreeComponent> BTComp;
 	TWeakObjectPtr<UBlackboardComponent> BBComp;
+
+	FVector PawnStartLocation = FVector::ZeroVector;  // captured right before the tree starts
+	bool bPawnStartCaptured = false;
 
 	TArray<FString> Samples;            // JSON fragments: {"t":..,"running":..,"tasks":".."}
 	TSet<FString> ActiveTasksSeen;

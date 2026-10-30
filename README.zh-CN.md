@@ -35,7 +35,7 @@ Agent 负责**规划与写规格**；确定性写入器负责**建资产**；校
 
 ## 功能
 
-### 10 个 MCP 工具
+### 11 个 MCP 工具
 
 | 工具 | 作用 |
 |---|---|
@@ -47,6 +47,7 @@ Agent 负责**规划与写规格**；确定性写入器负责**建资产**；校
 | `inspect_eqs_asset` | 读回 EQS 的 Option/Generator/Test/参数 |
 | `validate_eqs_spec` | 空跑校验 EQS 规格，不创建资产 |
 | `get_capability_catalog` | 可用 BT 节点类、EQS 资产/context、规格别名与参数 JSON 形状清单 |
+| `inspect_references` | 引用/内容域策略：每个引用的域与能否进 cook（资产模式与规格模式） |
 | `start_verify` | 运行层验证：起一个 PIE 会话，真正跑一遍生成的 BT/EQS 资产 |
 | `get_verify_result` | 轮询该会话：`pass` + `checks[]` + 执行时间线 + 终态 |
 
@@ -248,17 +249,17 @@ python BTForge/Tools/mcp_m1m2_smoke.py --official  # 同一套件走 Epic 官方
 | **M1 — EQS 构建器** | ✅ 2026-10-28 | 按规格创建 `UEnvQuery`；Runtime 模块拆分；运行时黑板 context |
 | **M2 — 能力目录 + 空跑校验** | ✅ 2026-10-28 | 能力目录、BT/EQS 空跑校验；工具总数 8 |
 | **M3 — 运行层验证** | ✅ 2026-10-29 | 进程内 PIE：`StartTree(SingleRun/Looped)` + 执行时间线采样；EQS instant query 断言；两段式异步协议；2.2.1 补齐 `pass` 聚合、PIE 启动语义、EQS 有效项计数、夹具 Pawn 等修复 |
-| M4 — 黄金路径端到端 | ⏳ 规划 | 自然语言 → EQS+BT → 构建 → 运行验证；引用/内容域策略 |
+| **M4 — 黄金路径端到端** | ✅ 2026-10-30 | `inspect_references`（引用/内容域策略，资产+规格两种模式）、`pawnDisplacement`/`expectedMinPawnDisplacement`、`Tools/mcp_m4_goldenpath.py`：catalog → 规格 → 资产 → 引用 → PIE，含坏规格→修复回路与可选导航图运动相位；工具 11 个 |
 | M5 — 原生节点库 | ⏳ 规划 | 参数化原生 service/decorator/task（BTS 等价物，免蓝图） |
 | M6 — 蓝图节点生成 | ⏳ 规划 | 先做"数据-only 蓝图子类"（改 CDO），再做受限事件图配方 |
 
-### 当前版本验证矩阵（v2.2.1）
+### 当前版本验证矩阵（v2.3.0）
 
 | 环境 | 结果 |
 |---|---|
-| UE 5.8，自研 server（`:8090`） | BT 基础套件 PASS；L2 套件 PASS；M1/M2 套件 **35/35 PASS**；M3 运行套件 **35/35 PASS** |
-| UE 5.8，官方 MCP server（`:8000`） | M1/M2 套件 **35/35 PASS**；M3 运行套件 **35/35 PASS**；10 个工具在官方 toolset 中注册成功 |
-| UE 5.5，空白工程 | 零源码改动编译通过；BT 基础套件 PASS；M1/M2 套件 **35/35 PASS**；M3 运行套件 PASS |
+| UE 5.8，自研 server（`:8090`） | BT 基础套件 PASS；M1/M2 套件 **35/35 PASS**；M3 运行套件 **35/35 PASS**；M4 黄金路径 **PASS**（22 项；含导航图运动相位 29 项） |
+| UE 5.8，官方 MCP server（`:8000`） | M1/M2 套件 **35/35 PASS**；M3 运行套件 **35/35 PASS**；M4 黄金路径 **PASS**；11 个工具在官方 toolset 中注册成功 |
+| UE 5.5，空白工程 | 零源码改动编译通过；M1/M2 套件 **35/35 PASS**；M3 运行套件 **35/35 PASS**；M4 黄金路径 **PASS** |
 | UE 5.4 / 5.6 / 5.7 | 未实测（API 按稳定性选型、无版本条件编译） |
 
 ---
@@ -269,6 +270,9 @@ python BTForge/Tools/mcp_m1m2_smoke.py --official  # 同一套件走 Epic 官方
 - **EQS 参数数组暂不可写**（如 `Composite` generator 的子 generator）；非空数组会被明确拒绝。
 - **蓝图节点类可用但还不能创建**：`build_behavior_tree` 可实例化已有 `_C` 类（L3.5）；生成 BTS 蓝图资产属于 M6。
 - **运行层验证的边界**（M3 已实现）：`start_verify` 需要一个开着编辑器的进程，且一次只跑一个会话；已有 PIE/SIE 在运行时会被拒绝（BTForge 只关自己开的会话）。`bareGameMode` 下没给 `mapPath` 会退到引擎模板图（项目图如 Lyra 在裸 GameMode 下会断言）。`fixturePawn` 默认给一个 `ADefaultPawn`，但导航类任务仍需目标图带 NavMesh（否则 `MoveTo` 只会报"0 items/failed to find path"）。EQS 验证是同步一次性 step 循环，不覆盖异步 generator。
+- **引用策略的判定边界**（M4 已实现）：`inspect_references` 对引擎内置模块用一份**明示的编辑器模块清单**判定（内置模块没有运行时可读的宿主类型），插件模块则读 uplugin 描述符（`Type=Editor` / `TargetAllowList` 不含 `Game`）；另外用 cooker 自己的 `IsEditorOnlyObject` 兜底。`/Engine` 内容只给 `warn`（能否进 cook 取决于引用链），不是错误。
+- **项目图上的 pass 可能被项目自身日志拖成 false**：`no_log_errors` 会把 PIE 期间项目 GameFeature/蓝图报的错误算进来（实测 Lyra 的 GCNL_Spawning 脚本错误）。M4 黄金路径因此在项目图上只断言"运动证据"（`pawn_moved`），并把项目噪声如实报告出来，而不是过滤掉。
+- **`inspect_behavior_tree` 只回标量参数**：结构体里的对象引用（如 `EQSRequest.QueryTemplate`）由 `inspect_references` 以精确 JSON 路径报告。
 - **能力目录里蓝图节点没有参数 schema**（只有原生类有），避免逐个加载蓝图 CDO。
 - **未挂载的 GameFeature/插件内容可能不在目录里**（AssetRegistry 只能看到已挂载内容；工具输出里有 note 提示）。
 - **5.4/5.6/5.7 未实测**：开发机只有 5.5 与 5.8。

@@ -23,7 +23,7 @@ public:
 	 * Start a runtime verification session (spawns an in-process PIE session).
 	 * OptionsJson: {"kind":"bt"|"eqs", "assetPath":"...", "mapPath":"?"(opt),
 	 *   bt: "mode":"SingleRun"|"Looped", "durationSec":n, "expectedDurationSec":n,
-	 *       "toleranceSec":n, "expectedActiveTask":"BTTask_Wait",
+	 *       "toleranceSec":n, "expectedActiveTask":"BTTask_Wait", "expectedMinPawnDisplacement":n,
 	 *       "blackboardInit":{"Key":value}, "fixturePawn":true|false,
 	 *   eqs: "queryRunMode":"SingleResult", "queryParams":{"Name":n}}
 	 * bareGameMode (default true) overrides PIE's GameMode with a bare AGameModeBase;

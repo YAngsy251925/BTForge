@@ -163,4 +163,21 @@ public:
 	 */
 	UFUNCTION(meta = (AICallable), Category = "BTForge")
 	static FString GetVerifyResult(const FString& SessionId);
+
+	/**
+	 * Reference / content-domain policy (M4), read-only. Reports every object
+	 * reference of a BT or EQS asset (or of a spec, before anything is written):
+	 * domain (native module / project content / plugin content / engine content),
+	 * module, plugin, blueprint flag, and whether it can exist in a cooked build.
+	 * Use it after Build* and before shipping, or on a spec to catch missing /
+	 * editor-only references early.
+	 *
+	 * @param RequestJson {"assetPath":"/Game/AI/BT_X"} for an existing asset, or
+	 *                    {"kind":"bt","treeJson":{...},"blackboardJson":{...}} /
+	 *                    {"kind":"eqs","queryJson":{...}} for a spec.
+	 * @return JSON {"ok":true,"mode":"asset|spec","verdict":"ok|warn|fail",
+	 *         "references":[...],"errors":[...],"warnings":[...],"summary":{...}}
+	 */
+	UFUNCTION(meta = (AICallable), Category = "BTForge")
+	static FString InspectReferences(const FString& RequestJson);
 };
