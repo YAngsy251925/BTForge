@@ -18,6 +18,9 @@ public class BTForgeCore : ModuleRules
 			"AIModule",
 			"AssetRegistry",
 			"AssetTools",
+			// M6 part 2: constrained event-graph recipes synthesize K2 graphs
+			// (UK2Node_Event / UK2Node_CallFunction + the K2 schema).
+			"BlueprintGraph",
 			"HTTPServer",
 			"Json",
 			// M4 reference policy: module host type (Runtime/Editor) comes from the

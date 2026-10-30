@@ -3,6 +3,67 @@
 All notable changes to BT Forge are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.6.0] — 2026-10-30
+
+M6 (part 2): constrained event-graph recipes — `create_node_blueprint` gains
+`RecipeJson` and synthesizes a working K2 event graph into generated node
+Blueprints. The milestone planned for part 2 is now complete; the roadmap item
+is retired.
+
+### Added
+
+- **`RecipeJson` on `create_node_blueprint`** (both endpoints): the recipe
+  `"call_function"` generates a fixed graph into the blueprint's event graph —
+  **Event ReceiveExecuteAI (tasks) / ReceiveActivationAI (services) →
+  CallFunction(Function, self = OwnerController/ControlledPawn pin) →
+  FinishExecute(true) (tasks)**. The target object comes from the AI event's
+  own output pins, so no getters or casts are needed. Synthesis uses the
+  engine's canonical placement sequence (`CreateNewGuid` → `PostPlacedNewNode`
+  → `AllocateDefaultPins` → `AddNode`) and `UEdGraphSchema_K2` connections;
+  validation happens before any asset is created:
+  - parent must be `UBTTask_BlueprintBase` / `UBTService_BlueprintBase`;
+  - function must exist on `AAIController` (controller target) or `APawn`
+    (pawn target), be BlueprintCallable, non-pure, non-static, non-deprecated,
+    and take zero parameters;
+  - the whole asset is deleted on any failure.
+- **`Tools/mcp_m6_bp.py`** extends to recipes: positive task recipe (chain
+  continues into a blackboard marker: `Seq == 1`), positive service recipe
+  (activation fires harmlessly), and six rejection cases with exact reasons.
+
+### Fixed
+
+- **Abstract BlueprintBase parents were rejected**: "derive and implement" is
+  the standard pattern and every engine `*BlueprintBase` is `Abstract +
+  Blueprintable` — the concrete-parent check was removed (the
+  `CanCreateBlueprintOfClass` probe remains as the real gate). The engine BT
+  node bases are still rejected, now with the Blueprintable explanation.
+- **Official endpoint marked `RecipeJson` as required**: the ToolsetRegistry
+  schema generator treats an *empty* CPP-default string as "no default"
+  (`ParameterDefaultString.IsEmpty()`), so the default is now `"{}"` — which
+  the library accepts alongside `""` as "no recipe". (The generator requires
+  every parameter that has neither schema metadata "default" nor an
+  `FOptionalProperty` type.)
+
+### Verified
+
+- UE 5.8, built-in endpoint (`:8090`): M6 suite **PASS** (recipe task proves
+  the synthesized graph executes end to end; service recipe fires on
+  activation), M5 suite **PASS**, M3 suite **35/35**, M1/M2 suite **35/35**,
+  base suite PASS, M4 golden path **PASS**.
+- UE 5.8, official endpoint (`:8000`): M6 suite **PASS** (12 tools).
+- UE 5.5 blank project: compiles with **zero changes**; M6/M5/M3/M1/M2/base
+  suites and the M4 golden path all **PASS**.
+
+### Known limitations (recipe scope)
+
+- One recipe (`call_function`), zero-parameter functions, targets limited to
+  the AI controller / its pawn. Constant-argument wiring, function returns
+  (decorator condition graphs), and project-class casts are future work.
+- A recipe task that destroys the fixture pawn wedges headless PIE (modal
+  ensure) — deliberately breaking the verify fixture is out of contract, so
+  the suite's "function really ran" evidence is the end-to-end chain marker,
+  not a destructive probe.
+
 ## [2.5.0] — 2026-10-30
 
 M6 (part 1): Blueprint node generation — the `create_node_blueprint` tool

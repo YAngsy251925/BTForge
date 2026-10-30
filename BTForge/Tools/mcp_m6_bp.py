@@ -159,17 +159,23 @@ def assert_board(label_prefix, result, key, expected):
           f"got={got!r} board={json.dumps(result.get('blackboardFinal'))[:300]}")
 
 
-def create_bp(tag, asset, parent, params, expect_ok=True):
-    r = call_tool("create_node_blueprint", {
+def create_bp(tag, asset, parent, params, expect_ok=True, recipe=None, error_hint=None):
+    args = {
         "AssetPath": asset,
         "ParentClassPath": parent,
         "ParamsJson": json.dumps(params) if params else "",
-    })
+    }
+    if recipe is not None:
+        args["RecipeJson"] = json.dumps(recipe)
+    r = call_tool("create_node_blueprint", args)
     if expect_ok:
-        check(f"m6 {tag} created", r.get("ok") is True and str(r.get("classPath", "")).endswith("_C"),
-              json.dumps(r)[:400])
+        ok = r.get("ok") is True and str(r.get("classPath", "")).endswith("_C")
+        if error_hint:
+            ok = ok and error_hint in json.dumps(r)
+        check(f"m6 {tag} created", ok, json.dumps(r)[:400])
     else:
-        check(f"m6 {tag} rejected", r.get("ok") is False, json.dumps(r)[:300])
+        ok = r.get("ok") is False and (error_hint is None or error_hint in str(r.get("error", "")))
+        check(f"m6 {tag} rejected" + (f" ({error_hint})" if error_hint else ""), ok, json.dumps(r)[:300])
     return r
 
 
@@ -218,7 +224,10 @@ def main():
     create_bp("duplicate", dup, "/Script/BTForgeRuntime.BTForgeTask_LogMessage", {"Message": "y"}, expect_ok=False)
     create_bp("actor parent", "/Game/AI/BTA_M6Bad_" + stamp, "/Script/Engine.Actor", {}, expect_ok=False)
     create_bp("composite parent", "/Game/AI/BTA_M6Bad2_" + stamp, "/Script/AIModule.BTComposite_Sequence", {}, expect_ok=False)
-    create_bp("abstract parent", "/Game/AI/BTA_M6Bad3_" + stamp, "/Script/AIModule.BTTaskNode", {}, expect_ok=False)
+    # abstract parents are legal (that is the BlueprintBase pattern); the native
+    # BT bases are rejected for being non-Blueprintable instead.
+    create_bp("non-blueprintable base", "/Game/AI/BTA_M6Bad3_" + stamp, "/Script/AIModule.BTTaskNode", {}, expect_ok=False,
+              error_hint="Blueprintable")
     create_bp("unknown parent", "/Game/AI/BTA_M6Bad4_" + stamp, "/Script/AIModule.DoesNotExist", {}, expect_ok=False)
     not_bpable = create_bp("non-blueprintable parent", "/Game/AI/BTA_M6Bad6_" + stamp,
                            "/Script/AIModule.BTTask_Wait", {}, expect_ok=False)
@@ -288,9 +297,83 @@ def main():
     check("m6 bp service run passes", result.get("pass") is True, json.dumps(result.get("checks"))[:400])
     assert_board("m6 bp service", result, "Mark", 9)
 
-    # ---------------------------------------------------------------- 6. summary
+    # ---------------------------------------------------------------- 6. event-graph recipes (M6 part 2)
+    bb_keys = {"keys": [{"name": "Seq", "type": "Int"}]}
+
+    def seq_increment():
+        # one-shot marker that works on every engine version (engine Set-key tasks are 5.6+)
+        return {"type": "ComputeValue", "params": {
+            "LeftKey": "Seq", "Operation": "Add", "RightConstant": 1, "ResultKey": "Seq"}}
+
+    task_parent = "/Script/AIModule.BTTask_BlueprintBase"
+    svc_parent = "/Script/AIModule.BTService_BlueprintBase"
+
+    # 6a. positive task recipe: call ForceNetUpdate on the AI controller.
+    relay = "/Game/AI/BTA_M6Relay_" + stamp
+    relay_bp = create_bp("recipe task", relay, task_parent, {},
+                         recipe={"recipe": "call_function", "target": "controller", "function": "ForceNetUpdate"})
+    relay_class = relay_bp.get("classPath") or ""
+    check("m6 recipe task echoes the recipe", "call_function" in str(relay_bp.get("recipe", "")),
+          json.dumps(relay_bp)[:200])
+
+    asset = "/Game/AI/BT_M6R_" + stamp
+    call_tool("create_behavior_tree_asset", {"AssetPath": asset, "BlackboardJson": json.dumps(bb_keys)})
+    relay_tree = {"type": "Sequence", "name": "Root", "children": [
+        {"type": relay_class, "name": "Relay"}, seq_increment()]}
+    built = call_tool("build_behavior_tree", {"AssetPath": asset, "TreeJson": json.dumps(relay_tree)})
+    check("m6 recipe tree built", built.get("ok") is True, json.dumps(built)[:300])
+    result = run_verify({"assetPath": asset, "blackboardInit": {"Seq": 0}})
+    print(f"  -> status={result.get('status')} pass={result.get('pass')}", flush=True)
+    check("m6 recipe task run finished", result.get("status") in ("done", "failed"), json.dumps(result)[:400])
+    check("m6 recipe task run passes", result.get("pass") is True, json.dumps(result.get("checks"))[:400])
+    assert_board("m6 recipe task", result, "Seq", 1)
+
+    # 6b. positive service recipe: activation calls ForceNetUpdate.
+    svc_relay = "/Game/AI/BTA_M6SvcRelay_" + stamp
+    svc_relay_bp = create_bp("recipe service", svc_relay, svc_parent, {},
+                             recipe={"recipe": "call_function", "target": "controller", "function": "ForceNetUpdate"})
+    svc_relay_class = svc_relay_bp.get("classPath") or ""
+    asset = "/Game/AI/BT_M6RS_" + stamp
+    call_tool("create_behavior_tree_asset", {"AssetPath": asset, "BlackboardJson": json.dumps(bb_keys)})
+    svc_recipe_tree = {"type": "Sequence", "name": "Root",
+                       "services": [{"type": svc_relay_class}],
+                       "children": [{"type": "Wait", "params": {"WaitTime": 0.6}}]}
+    built = call_tool("build_behavior_tree", {"AssetPath": asset, "TreeJson": json.dumps(svc_recipe_tree)})
+    check("m6 recipe service tree built", built.get("ok") is True, json.dumps(built)[:300])
+    result = run_verify({"assetPath": asset, "blackboardInit": {"Seq": 0}})
+    print(f"  -> status={result.get('status')} pass={result.get('pass')}", flush=True)
+    check("m6 recipe service run finished", result.get("status") in ("done", "failed"), json.dumps(result)[:400])
+    check("m6 recipe service run passes", result.get("pass") is True, json.dumps(result.get("checks"))[:400])
+
+    # 6c. recipe rejections (validated before anything is created).
+    # Note: no "dramatic" proof like destroying the fixture pawn - it wedges
+    # PIE (modal ensure in a headless editor) and deliberately wrecking the
+    # fixture violates the verify harness's own discipline. The positive runs
+    # already prove the synthesized graph executes end to end.
+    create_bp("recipe on native parent", "/Game/AI/BTA_M6BadR0_" + stamp,
+              "/Script/BTForgeRuntime.BTForgeTask_LogMessage", {}, expect_ok=False,
+              recipe={"recipe": "call_function", "target": "controller", "function": "ForceNetUpdate"},
+              error_hint="BlueprintBase")
+    create_bp("unknown recipe", "/Game/AI/BTA_M6BadR1_" + stamp, task_parent, {}, expect_ok=False,
+              recipe={"recipe": "frobnicate", "target": "controller", "function": "ForceNetUpdate"},
+              error_hint="only recipe")
+    create_bp("unknown target", "/Game/AI/BTA_M6BadR2_" + stamp, task_parent, {}, expect_ok=False,
+              recipe={"recipe": "call_function", "target": "world", "function": "ForceNetUpdate"},
+              error_hint='Allowed: "controller", "pawn"')
+    create_bp("unknown function", "/Game/AI/BTA_M6BadR3_" + stamp, task_parent, {}, expect_ok=False,
+              recipe={"recipe": "call_function", "target": "controller", "function": "DoesNotExist"},
+              error_hint="not found")
+    create_bp("function with args", "/Game/AI/BTA_M6BadR4_" + stamp, task_parent, {}, expect_ok=False,
+              recipe={"recipe": "call_function", "target": "pawn", "function": "AddMovementInput"},
+              error_hint="zero-parameter")
+    create_bp("pure function", "/Game/AI/BTA_M6BadR5_" + stamp, task_parent, {}, expect_ok=False,
+              recipe={"recipe": "call_function", "target": "pawn", "function": "K2_GetActorRotation"},
+              error_hint="pure")
+
+    # ---------------------------------------------------------------- 7. summary
     print(f"\n[artifacts] BP={bp_task} BP_SVC={bp_svc} BT={bt_asset} "
-          f"DUP={dup} BTA_M6Bad5=/Game/AI/BTA_M6Bad5_{stamp}", flush=True)
+          f"DUP={dup} BTA_M6Bad5=/Game/AI/BTA_M6Bad5_{stamp} "
+          f"RECIPES={relay},{svc_relay} BT_R={asset}", flush=True)
     if not keep:
         print("[cleanup] close the editor, then delete those assets "
               "(open assets cannot be removed safely).", flush=True)

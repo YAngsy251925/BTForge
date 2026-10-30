@@ -182,24 +182,29 @@ public:
 	static FString InspectReferences(const FString& RequestJson);
 
 	/**
-	 * Blueprint node generation (M6): create a data-only Blueprint node asset -
-	 * a generated class derived from a BT node base class (UBTTaskNode /
-	 * UBTService / UBTDecorator, no Blueprint composites) with ParamsJson
-	 * written onto the class CDO through the same reflection writers
-	 * BuildBehaviorTree uses. No event-graph logic is generated. The returned
-	 * classPath plugs straight into BuildBehaviorTree as a node "type", and the
-	 * capability catalog lists the new class automatically. Fails if the asset
-	 * exists; nothing is kept on failure. Blackboard key names in params
-	 * resolve per-tree when the node is placed.
+	 * Blueprint node generation (M6): create a Blueprint node asset - a
+	 * generated class derived from a BT node base class with ParamsJson written
+	 * onto the class CDO through the same reflection writers BuildBehaviorTree
+	 * uses, and - with RecipeJson - a constrained event-graph recipe: on the
+	 * node's main event (tasks ReceiveExecuteAI, services ReceiveActivationAI)
+	 * call a zero-parameter BlueprintCallable function on the AI controller or
+	 * its pawn, then finish (tasks). RecipeJson:
+	 * {"recipe":"call_function","target":"controller"|"pawn","function":"Name"}.
+	 * The returned classPath plugs straight into BuildBehaviorTree as a node
+	 * "type", and the capability catalog lists the new class automatically.
+	 * Fails if the asset exists; nothing is kept on failure. Blackboard key
+	 * names in params resolve per-tree when the node is placed.
 	 *
 	 * @param AssetPath       Target blueprint asset, e.g. "/Game/AI/BTA_LogShot".
 	 * @param ParentClassPath Non-abstract UBTTaskNode/UBTService/UBTDecorator-derived
-	 *                        class path (/Script/... or /Game/..._C).
+	 *                        class path (/Script/... or /Game/..._C); recipes
+	 *                        additionally require the *BlueprintBase class.
 	 * @param ParamsJson      {"PropertyName": value, ...} for the class defaults;
 	 *                        pass "" for engine defaults.
+	 * @param RecipeJson      Optional constrained event-graph recipe; pass "" for none.
 	 * @return JSON {"ok":true,"assetPath":...,"classPath":"..._C","parent":...,
-	 *         "appliedParams":N} or {"ok":false,"error":msg}
+	 *         "appliedParams":N,"recipe":...} or {"ok":false,"error":msg}
 	 */
 	UFUNCTION(meta = (AICallable), Category = "BTForge")
-	static FString CreateNodeBlueprint(const FString& AssetPath, const FString& ParentClassPath, const FString& ParamsJson);
+	static FString CreateNodeBlueprint(const FString& AssetPath, const FString& ParentClassPath, const FString& ParamsJson, const FString& RecipeJson = TEXT("{}"));
 };

@@ -276,6 +276,16 @@ python BTForge/Tools/mcp_m5_nodes.py          # M5 原生节点库（catalog →
 
 返回的 `classPath` 可直接作为 `build_behavior_tree` 的节点 `type`，能力目录自动收录新类，PIE 验证证明 CDO 默认值真实驱动运行时行为。引擎的 `*BlueprintBase` 也是合法父类；引擎原生 BT 类不可 `Blueprintable`，会被拒绝并给出解释。
 
+**事件图配方**（`RecipeJson`）更进一步：直接合成可运行的 K2 事件图。配方 `"call_function"` 在节点的主事件上（任务 `ReceiveExecuteAI`、服务 `ReceiveActivationAI`）生成一个函数调用——目标对象取自事件自带的 `OwnerController`/`ControlledPawn` 引脚——调用 AI 控制器或其 pawn 上零参数 BlueprintCallable 函数，任务随后自动以成功结束：
+
+```json
+{"AssetPath": "/Game/AI/BTA_Reload",
+ "ParentClassPath": "/Script/AIModule.BTTask_BlueprintBase",
+ "RecipeJson": "{\"recipe\":\"call_function\",\"target\":\"controller\",\"function\":\"ForceNetUpdate\"}"}
+```
+
+图形状固定、创建期全量校验（函数须存在于 `AAIController`/`APawn`、BlueprintCallable、非纯、零参数）；失败即删资产、不留残骸。PIE 验证证明合成图端到端执行。
+
 ---
 
 ## 开发进度
@@ -295,9 +305,10 @@ python BTForge/Tools/mcp_m5_nodes.py          # M5 原生节点库（catalog →
 | **M4 — 黄金路径端到端** | ✅ 2026-10-30 | `inspect_references`（引用/内容域策略，资产+规格两种模式）、`pawnDisplacement`/`expectedMinPawnDisplacement`、`Tools/mcp_m4_goldenpath.py`：catalog → 规格 → 资产 → 引用 → PIE，含坏规格→修复回路与可选导航图运动相位；工具 11 个 |
 | **M5 — 原生节点库** | ✅ 2026-10-30 | `BTForgeRuntime` 内 7 个参数化原生 service/decorator/task（ComputeValue、Log、SetValue、UpdateDistance、FloatCompare、DistanceCheck、Chance）+ 规格别名（别名表即 catalog 权威源）；`Tools/mcp_m5_nodes.py` 在 PIE 里逐行为验证；工具 11 个 |
 | **M6 — 蓝图节点生成（上半）** | ✅ 2026-10-30 | `create_node_blueprint`：数据-only 蓝图节点资产（编译出的 `_C` 类 + CDO 默认值，无事件图）、精确的父类校验、catalog 自动收录、PIE 验证 CDO 行为；`Tools/mcp_m6_bp.py`；工具 12 个 |
-| M6 — 蓝图节点生成（下半） | ⏳ 规划 | 受限事件图配方 |
+| **M6 — 蓝图节点生成（下半）** | ✅ 2026-10-30 | 受限事件图配方：`RecipeJson` 在 `create_node_blueprint` 里合成固定形状的 K2 图（AI 事件 → 控制器/pawn 上零参函数调用 → 任务自动收尾），创建期校验、PIE 端到端验证 |
+| 蓝图配方 — 扩展面 | ⏳ 规划 | 常量参数连线、装饰器条件图（函数返回值）、项目类 Cast |
 
-### 当前版本验证矩阵（v2.5.0）
+### 当前版本验证矩阵（v2.6.0）
 
 | 环境 | 结果 |
 |---|---|

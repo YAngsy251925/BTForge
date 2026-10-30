@@ -169,8 +169,8 @@ namespace
 			},
 			{
 				TEXT("create_node_blueprint"),
-				TEXT("Blueprint node generation (M6): create a data-only Blueprint node asset - a generated class derived from a BT node base class (UBTTaskNode/UBTService/UBTDecorator, no Blueprint composites) with ParamsJson written onto the class CDO through the same reflection writers build_behavior_tree uses. No event-graph logic is generated. The returned classPath plugs straight into build_behavior_tree as a node 'type', and the capability catalog lists the new class automatically. Fails if the asset exists; nothing is kept on failure. Blackboard key names in params resolve per-tree when the node is placed."),
-				TEXT(R"json({"type":"object","properties":{"AssetPath":{"type":"string","description":"Target blueprint asset path, e.g. /Game/AI/BTA_LogShot."},"ParentClassPath":{"type":"string","description":"Class path of a non-abstract UBTTaskNode/UBTService/UBTDecorator-derived class, e.g. /Script/BTForgeRuntime.BTForgeTask_LogMessage or an existing /Game/..._C."},"ParamsJson":{"type":["object","string"],"description":"{\"PropertyName\": value, ...} applied to the class defaults, e.g. {\"Message\":\"shot fired\",\"Severity\":\"Warning\"}. Optional (empty = engine defaults)."}},"required":["AssetPath","ParentClassPath"]})json")
+				TEXT("Blueprint node generation (M6): create a Blueprint node asset - a generated class derived from a BT node base class, with ParamsJson written onto the class CDO through the same reflection writers build_behavior_tree uses, and - with RecipeJson - a constrained event-graph recipe: on the node's main event (tasks ReceiveExecuteAI, services ReceiveActivationAI) call a zero-parameter BlueprintCallable function on the AI controller or its pawn, then finish (tasks). RecipeJson: {\"recipe\":\"call_function\",\"target\":\"controller\"|\"pawn\",\"function\":\"ForceNetUpdate\"}. The returned classPath plugs straight into build_behavior_tree as a node 'type', and the capability catalog lists the new class automatically. Fails if the asset exists; nothing is kept on failure. Blackboard key names in params resolve per-tree when the node is placed."),
+				TEXT(R"json({"type":"object","properties":{"AssetPath":{"type":"string","description":"Target blueprint asset path, e.g. /Game/AI/BTA_LogShot."},"ParentClassPath":{"type":"string","description":"Class path of a non-abstract UBTTaskNode/UBTService/UBTDecorator-derived class, e.g. /Script/BTForgeRuntime.BTForgeTask_LogMessage, /Script/AIModule.BTTask_BlueprintBase, or an existing /Game/..._C. Recipes additionally require the *BlueprintBase class."},"ParamsJson":{"type":["object","string"],"description":"{\"PropertyName\": value, ...} applied to the class defaults, e.g. {\"Message\":\"shot fired\",\"Severity\":\"Warning\"}. Optional (empty = engine defaults)."},"RecipeJson":{"type":["object","string"],"description":"Optional constrained event-graph recipe {\"recipe\":\"call_function\",\"target\":\"controller\"|\"pawn\",\"function\":\"Name\"}; the function must be a zero-parameter BlueprintCallable non-pure instance function of AAIController (controller) or APawn (pawn)."}},"required":["AssetPath","ParentClassPath"]})json")
 			},
 		};
 		return Tools;
@@ -304,13 +304,18 @@ namespace
 		{
 			FString ParentClassPath;
 			FString ParamsJson;
+			FString RecipeJson;
 			if (bHasAssetPath && Args->TryGetStringField(TEXT("ParentClassPath"), ParentClassPath))
 			{
 				if (Args->HasField(TEXT("ParamsJson")))
 				{
 					GetToolArgAsJsonText(Args, TEXT("ParamsJson"), ParamsJson, ArgError);
 				}
-				LibraryResult = UBTForgeBlueprintLibrary::CreateNodeBlueprint(AssetPath, ParentClassPath, ParamsJson);
+				if (Args->HasField(TEXT("RecipeJson")))
+				{
+					GetToolArgAsJsonText(Args, TEXT("RecipeJson"), RecipeJson, ArgError);
+				}
+				LibraryResult = UBTForgeBlueprintLibrary::CreateNodeBlueprint(AssetPath, ParentClassPath, ParamsJson, RecipeJson);
 			}
 		}
 		else if (ToolName == TEXT("start_verify") || ToolName == TEXT("get_verify_result"))
@@ -383,7 +388,7 @@ namespace
 
 		TSharedRef<FJsonObject> ServerInfo = MakeShared<FJsonObject>();
 		ServerInfo->SetStringField(TEXT("name"), TEXT("BTForge"));
-		ServerInfo->SetStringField(TEXT("version"), TEXT("2.5.0"));
+		ServerInfo->SetStringField(TEXT("version"), TEXT("2.6.0"));
 
 		TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
 		Result->SetStringField(TEXT("protocolVersion"), Negotiated);

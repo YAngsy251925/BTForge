@@ -62,7 +62,7 @@ FString UBTForgeToolset::InspectReferences(const FString& RequestJson)
 	return UBTForgeReferenceLibrary::InspectReferences(RequestJson);
 }
 
-FString UBTForgeToolset::CreateNodeBlueprint(const FString& AssetPath, const FString& ParentClassPath, const FString& ParamsJson)
+FString UBTForgeToolset::CreateNodeBlueprint(const FString& AssetPath, const FString& ParentClassPath, const FString& ParamsJson, const FString& RecipeJson)
 {
-	return UBTForgeBlueprintLibrary::CreateNodeBlueprint(AssetPath, ParentClassPath, ParamsJson);
+	return UBTForgeBlueprintLibrary::CreateNodeBlueprint(AssetPath, ParentClassPath, ParamsJson, RecipeJson);
 }

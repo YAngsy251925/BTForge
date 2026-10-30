@@ -22,13 +22,26 @@ class BTFORGECORE_API UBTForgeBlueprintLibrary : public UBlueprintFunctionLibrar
 
 public:
 	/**
-	 * Create a data-only Blueprint node asset: a generated class derived from a
-	 * BT node base class (UBTTaskNode / UBTService / UBTDecorator — Blueprint
-	 * composites do not exist in the engine), with ParamsJson written onto the
-	 * class CDO through the same reflection writers build_behavior_tree uses
-	 * (enums by name, class paths, nested structs). No event-graph logic is
-	 * generated. Fails if the asset already exists; nothing is kept on failure
-	 * (the half-created asset is deleted).
+	 * Create a Blueprint node asset: a generated class derived from a BT node
+	 * base class, with ParamsJson written onto the class CDO through the same
+	 * reflection writers build_behavior_tree uses (enums by name, class paths,
+	 * nested structs), and - when RecipeJson is given - a constrained
+	 * event-graph recipe synthesized into the event graph (M6 part 2).
+	 * Fails if the asset already exists; nothing is kept on failure (the
+	 * half-created asset is deleted).
+	 *
+	 * Recipes (the only kind in this release is "call_function"): on the node's
+	 * main event (tasks: ReceiveExecuteAI, services: ReceiveActivationAI) call
+	 * a zero-parameter BlueprintCallable function on the AI controller or its
+	 * pawn (taken from the event's OwnerController/ControlledPawn pins), then -
+	 * for tasks - finish with success. Graph shape is fixed; the only choices
+	 * are the ones in RecipeJson:
+	 *   {"recipe":"call_function",
+	 *    "target":"controller"|"pawn",
+	 *    "function":"ForceNetUpdate"}
+	 * The function must exist on AAIController (controller target) or APawn
+	 * (pawn target), be BlueprintCallable, non-pure, non-static, and take no
+	 * parameters - everything else is rejected with an exact reason.
 	 *
 	 * Blackboard key names inside params are accepted without tree validation:
 	 * a CDO is tree-independent; the key is resolved per-tree when the node is
@@ -36,12 +49,14 @@ public:
 	 *
 	 * @param AssetPath       Target blueprint asset, e.g. "/Game/AI/BTA_LogShot".
 	 * @param ParentClassPath Class path of a non-abstract UBTTaskNode/UBTService/
-	 *                        UBTDecorator-derived class (/Script/... or /Game/..._C).
+	 *                        UBTDecorator-derived class (/Script/... or /Game/..._C);
+	 *                        recipes additionally require the *BlueprintBase class.
 	 * @param ParamsJson      {"PropertyName": value, ...} applied to the class
 	 *                        defaults, e.g. {"Message":"shot fired","Severity":"Warning"}.
+	 * @param RecipeJson      Optional constrained event-graph recipe (see above).
 	 * @return JSON {"ok":true,"assetPath":...,"classPath":"..._C","parent":...,
-	 *         "appliedParams":N} or {"ok":false,"error":msg}
+	 *         "appliedParams":N,"recipe":...} or {"ok":false,"error":msg}
 	 */
 	UFUNCTION(BlueprintCallable, Category = "BTForge")
-	static FString CreateNodeBlueprint(const FString& AssetPath, const FString& ParentClassPath, const FString& ParamsJson);
+	static FString CreateNodeBlueprint(const FString& AssetPath, const FString& ParentClassPath, const FString& ParamsJson, const FString& RecipeJson);
 };

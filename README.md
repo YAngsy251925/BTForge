@@ -294,6 +294,24 @@ proves the defaults drive runtime behavior. Engine `*BlueprintBase` classes are
 also valid parents; engine-native BT classes are not `Blueprintable` and are
 rejected with an explanation.
 
+**Event-graph recipes** (`RecipeJson`) go one step further and synthesize a
+working K2 graph. The recipe `"call_function"` generates, on the node's main
+event (`ReceiveExecuteAI` for tasks, `ReceiveActivationAI` for services), a
+call to a zero-parameter BlueprintCallable function on the AI controller or its
+pawn — taken straight from the event's `OwnerController`/`ControlledPawn` pins
+— and tasks finish with success:
+
+```json
+{"AssetPath": "/Game/AI/BTA_Reload",
+ "ParentClassPath": "/Script/AIModule.BTTask_BlueprintBase",
+ "RecipeJson": "{\"recipe\":\"call_function\",\"target\":\"controller\",\"function\":\"ForceNetUpdate\"}"}
+```
+
+The graph shape is fixed and everything is validated at creation (function
+exists on `AAIController`/`APawn`, BlueprintCallable, non-pure, zero
+parameters); a failed attempt deletes the asset. PIE verification shows the
+synthesized graph executing end to end.
+
 ---
 
 ## Development progress
@@ -313,7 +331,8 @@ rejected with an explanation.
 | **M4 — golden path E2E** | ✅ 2026-10-30 | `inspect_references` (reference / content-domain policy, asset + spec mode), `pawnDisplacement` + `expectedMinPawnDisplacement`, `Tools/mcp_m4_goldenpath.py`: catalog → spec → asset → references → PIE, with a broken-build → repair loop and an opt-in nav-meshed movement phase. 11 tools |
 | **M5 — native node library** | ✅ 2026-10-30 | 7 parameterized native service/decorator/task classes in `BTForgeRuntime` (ComputeValue, Log, SetValue, UpdateDistance, FloatCompare, DistanceCheck, Chance) + spec aliases exported as the catalog's authoritative tables; `Tools/mcp_m5_nodes.py` verifies every behavior in PIE. 11 tools |
 | **M6 — Blueprint node generation (part 1)** | ✅ 2026-10-30 | `create_node_blueprint`: data-only Blueprint node assets (compiled `_C` class + CDO defaults, no event graph), precise parent validation, catalog auto-listing, PIE-verified CDO behavior; `Tools/mcp_m6_bp.py`. 12 tools |
-| M6 — Blueprint node generation (part 2) | ⏳ planned | Constrained event-graph recipes |
+| **M6 — Blueprint node generation (part 2)** | ✅ 2026-10-30 | Constrained event-graph recipes: `RecipeJson` on `create_node_blueprint` synthesizes a fixed K2 graph (AI event → zero-param function call on controller/pawn → task auto-finish), validated at creation, PIE-verified end to end |
+| Blueprint recipes — extended surface | ⏳ planned | Constant-argument wiring, decorator condition graphs (function returns), project-class casts |
 
 ### Verification matrix (current release)
 
@@ -321,8 +340,7 @@ rejected with an explanation.
 |---|---|
 | UE 5.8, built-in server (`:8090`) | BT core suite PASS; M1/M2 suite **35/35 PASS**; M3 runtime suite **35/35 PASS**; M4 golden path **PASS** (22 checks, 29 with movement); M5 node-library suite **PASS** (8 PIE behavior runs); M6 blueprint-generation suite **PASS** (2 PIE runs) |
 | UE 5.8, official MCP server (`:8000`) | M1/M2 suite **35/35 PASS**; M3 runtime suite **35/35 PASS**; M4 golden path **PASS**; M5 + M6 suites **PASS**; 12 tools registered in the official toolset |
-| UE 5.5, blank project | compiles with zero source changes; M1/M2 suite **35/35 PASS**; M3 runtime suite **35/35 PASS**; M4 golden path **PASS**; M5 + M6 suites **PASS** |
-| UE 5.4 / 5.6 / 5.7 | not yet tested (APIs chosen for stability; no version conditionals) |
+| UE 5.5, blank project | compiles with zero source changes; M1/M2 suite **35/35 PASS**; M3 runtime suite **35/35 PASS**; M4 golden path **PASS**; M5 + M6 suites **PASS** || UE 5.4 / 5.6 / 5.7 | not yet tested (APIs chosen for stability; no version conditionals) |
 
 ---
 
