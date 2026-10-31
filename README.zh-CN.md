@@ -35,7 +35,7 @@ Agent 负责**规划与写规格**；确定性写入器负责**建资产**；校
 
 ## 功能
 
-### 12 个 MCP 工具
+### 13 个 MCP 工具
 
 | 工具 | 作用 |
 |---|---|
@@ -51,6 +51,7 @@ Agent 负责**规划与写规格**；确定性写入器负责**建资产**；校
 | `create_node_blueprint` | 生成蓝图节点资产（编译出的 `_C` 类 + CDO 默认值），可选 `RecipeJson` 合成受限事件图；返回的类路径可直接作为 `build_behavior_tree` 的节点 `type` |
 | `start_verify` | 运行层验证：起一个 PIE 会话，真正跑一遍生成的 BT/EQS 资产 |
 | `get_verify_result` | 轮询该会话：`pass` + `checks[]` + 执行时间线 + 终态 |
+| `repair_graph` | 丢弃陈旧的编辑器图，让行为树编辑器下次打开时从数据链重建（无头 `build_behavior_tree` 之后的维护步骤；资产在编辑器中打开时拒绝执行） |
 
 ### 规格覆盖范围
 

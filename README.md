@@ -35,7 +35,7 @@ The agent stays a **planner and spec author**; the deterministic writer owns ass
 
 ## Features
 
-### Twelve MCP tools
+### Thirteen MCP tools
 
 | Tool | Purpose |
 |---|---|
@@ -51,6 +51,7 @@ The agent stays a **planner and spec author**; the deterministic writer owns ass
 | `create_node_blueprint` | Creates a Blueprint node asset (compiled `_C` class + CDO defaults), optionally with a constrained `RecipeJson` event graph; the class path plugs straight into `build_behavior_tree` |
 | `start_verify` | Runtime verification: starts an in-process PIE session and actually runs a generated BT/EQS asset, sampling execution over time |
 | `get_verify_result` | Polls a verify session; returns machine-readable checks (started/running/finished-in-window/no-log-errors), execution timeline and final blackboard/EQS results |
+| `repair_graph` | Drop a stale editor graph so the Behavior Tree editor rebuilds it from the data chain on next open (maintenance after a headless `build_behavior_tree`; refuses while the asset is open in an editor) |
 
 ### Spec coverage
 

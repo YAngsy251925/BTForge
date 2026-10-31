@@ -23,6 +23,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`inspect_behavior_tree` reports key bindings** per node/service/decorator
   (`"keys": {"BlackboardKey": {"name": "MoveGoal", "type": "BlackboardKeyType_Object"}}`),
   resolved against the tree's blackboard instead of walking selector internals.
+- **Blackboard Object keys: declarable base class**: the key spec accepts
+  `"base"` (short class name or full object path) on Object keys; the class is
+  resolved with existence checking, non-Object keys with `base` are rejected,
+  and `inspect_behavior_tree` reports the resolved base per key.
 - **`repair_graph` (13th tool)**: drops a BT asset's stale editor graph and saves
   the asset so the Behavior Tree editor rebuilds the graph from the data chain on
   next open. After a `build_behavior_tree` from a headless or cross-process
