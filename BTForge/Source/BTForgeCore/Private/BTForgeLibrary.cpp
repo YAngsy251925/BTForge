@@ -18,6 +18,11 @@
 #include "BehaviorTree/BTNode.h"
 #include "BehaviorTree/BTService.h"
 #include "BehaviorTree/Services/BTService_RunEQS.h"
+#include "EnvironmentQuery/EnvQuery.h"
+#include "EnvironmentQuery/EnvQueryGenerator.h"
+#include "EnvironmentQuery/EnvQueryOption.h"
+#include "EnvironmentQuery/Items/EnvQueryItemType_ActorBase.h"
+#include "EnvironmentQuery/Items/EnvQueryItemType_VectorBase.h"
 #include "BehaviorTree/Composites/BTComposite_Selector.h"
 #include "BehaviorTree/Composites/BTComposite_Sequence.h"
 #include "BehaviorTree/Tasks/BTTask_MoveTo.h"
@@ -163,6 +168,39 @@ namespace
 	FString WhitelistText()
 	{
 		return TEXT("Sequence, Selector, Wait, MoveTo, RunEQS, ComputeValue, Log, or a '/path/Asset.Asset_C' class path (any non-abstract UBTCompositeNode/UBTTaskNode-derived class, engine or blueprint)");
+	}
+
+	/** Keys a fresh UBlackboardData already carries. UBlackboardData::PostInitProperties
+	 *  calls UpdatePersistentKeys, which adds SelfActor unless the "add blackboard self
+	 *  key" AI setting is off, so appending a spec key with the same name produced a
+	 *  duplicated entry: GetKeyID resolved to the built-in one and the duplicate showed
+	 *  up in every inspect while its type was ignored. */
+	void CollectExistingBlackboardKeys(const UBlackboardData* Blackboard, TSet<FName>& OutNames)
+	{
+		OutNames.Reset();
+		if (Blackboard == nullptr)
+		{
+			return;
+		}
+		for (const FBlackboardEntry& Entry : Blackboard->Keys)
+		{
+			OutNames.Add(Entry.EntryName);
+		}
+	}
+
+	FString ExistingBlackboardKeyError(int32 KeyIndex, const FString& KeyName, const TSet<FName>& Existing)
+	{
+		TArray<FString> Names;
+		Names.Reserve(Existing.Num());
+		for (const FName& Name : Existing)
+		{
+			Names.Add(Name.ToString());
+		}
+		Names.Sort();
+		return FString::Printf(
+			TEXT("keys[%d] ('%s'): this key already exists on every blackboard (UBlackboardData adds %s on creation); "
+				"remove it from the spec - nodes can still reference it by name"),
+			KeyIndex, *KeyName, *FString::Join(Names, TEXT(", ")));
 	}
 
 	/** Type-checked optional field access. UE's GetObjectField/GetArrayField only log a
@@ -518,6 +556,114 @@ namespace
 		return true;
 	}
 
+	/** A query option's item type can only be stored into a blackboard key of the
+	 *  matching kind: actor items -> Object keys, point/vector items -> Vector keys.
+	 *  UEnvQueryItemType_ActorBase / VectorBase::StoreInBlackboard compare the exact
+	 *  key class and return false otherwise - and that runtime failure is only
+	 *  visible in the visual log (UE_VLOG), never in logErrors. Reject the pair
+	 *  here instead. */
+	bool IsItemStoreableIntoKey(const UClass* ItemTypeClass, const UClass* KeyTypeClass)
+	{
+		if (ItemTypeClass == nullptr || KeyTypeClass == nullptr)
+		{
+			return false;
+		}
+		if (ItemTypeClass->IsChildOf<UEnvQueryItemType_ActorBase>())
+		{
+			return KeyTypeClass == UBlackboardKeyType_Object::StaticClass();
+		}
+		if (ItemTypeClass->IsChildOf<UEnvQueryItemType_VectorBase>())
+		{
+			return KeyTypeClass == UBlackboardKeyType_Vector::StaticClass();
+		}
+		return false;
+	}
+
+	/** Binding a blackboard key on a RunEQS node means wanting the result, so let
+	 *  bUseBBKey follow the binding unless the spec set it explicitly. */
+	void AutoSetRunEQSUseBBKey(UClass* NodeClass, const TSharedPtr<FJsonObject>& Params)
+	{
+		if ((NodeClass->IsChildOf<UBTTask_RunEQSQuery>() || NodeClass->IsChildOf<UBTService_RunEQS>())
+			&& Params->HasField(TEXT("BlackboardKey")) && !Params->HasField(TEXT("bUseBBKey")))
+		{
+			Params->SetBoolField(TEXT("bUseBBKey"), true);
+		}
+	}
+
+	/** After params are applied on a RunEQS node with a bound key, check that the
+	 *  query's item type can actually be stored into that key (see
+	 *  IsItemStoreableIntoKey). Catches "EQS_FindTarget returns Actor items;
+	 *  MoveGoal is a Vector key" at build time instead of the silent runtime drop. */
+	bool ValidateRunEQSKeyTypes(UObject* Node, const UBlackboardData* BlackboardAsset, const FString& NodePath, FString& OutError)
+	{
+		if (BlackboardAsset == nullptr
+			|| (!Node->IsA<UBTTask_RunEQSQuery>() && !Node->IsA<UBTService_RunEQS>()))
+		{
+			return true;
+		}
+		FStructProperty* SelectorProperty = CastField<FStructProperty>(Node->GetClass()->FindPropertyByName(TEXT("BlackboardKey")));
+		FBoolProperty* UseBBKeyProperty = CastField<FBoolProperty>(Node->GetClass()->FindPropertyByName(TEXT("bUseBBKey")));
+		FStructProperty* RequestProperty = CastField<FStructProperty>(Node->GetClass()->FindPropertyByName(TEXT("EQSRequest")));
+		if (SelectorProperty == nullptr || UseBBKeyProperty == nullptr || RequestProperty == nullptr)
+		{
+			return true; // not the expected shape; nothing to check
+		}
+		if (!UseBBKeyProperty->GetPropertyValue(UseBBKeyProperty->ContainerPtrToValuePtr<void>(Node)))
+		{
+			return true; // result is not stored; the pair is irrelevant
+		}
+		void* SelectorData = SelectorProperty->ContainerPtrToValuePtr<void>(Node);
+		FNameProperty* NameProperty = CastField<FNameProperty>(SelectorProperty->Struct->FindPropertyByName(TEXT("SelectedKeyName")));
+		if (NameProperty == nullptr)
+		{
+			return true;
+		}
+		const FName KeyName = NameProperty->GetPropertyValue(NameProperty->ContainerPtrToValuePtr<void>(SelectorData));
+		if (KeyName.IsNone())
+		{
+			return true;
+		}
+
+		FObjectProperty* QueryProperty = CastField<FObjectProperty>(RequestProperty->Struct->FindPropertyByName(TEXT("QueryTemplate")));
+		if (QueryProperty == nullptr)
+		{
+			return true;
+		}
+		const UEnvQuery* Query = Cast<UEnvQuery>(QueryProperty->GetObjectPropertyValue(QueryProperty->ContainerPtrToValuePtr<void>(RequestProperty->ContainerPtrToValuePtr<void>(Node))));
+		if (Query == nullptr)
+		{
+			return true; // the asset-reference writer already rejected missing templates
+		}
+
+		const FBlackboard::FKey KeyId = BlackboardAsset->GetKeyID(KeyName);
+		const UClass* KeyClass = BlackboardAsset->GetKeyType(KeyId).Get();
+
+		int32 OptionIndex = 0;
+		for (const UEnvQueryOption* Option : Query->GetOptions())
+		{
+			if (Option == nullptr || Option->Generator == nullptr)
+			{
+				OptionIndex++;
+				continue;
+			}
+			UClass* ItemClass = Option->Generator->ItemType.Get();
+			if (!IsItemStoreableIntoKey(ItemClass, KeyClass))
+			{
+				const TCHAR* ItemKind = ItemClass && ItemClass->IsChildOf<UEnvQueryItemType_ActorBase>()
+					? TEXT("Actor")
+					: (ItemClass && ItemClass->IsChildOf<UEnvQueryItemType_VectorBase>() ? TEXT("point") : TEXT("unsupported"));
+				OutError = FString::Printf(TEXT("%s: EQS option %d produces %s items (%s) but BlackboardKey '%s' is a %s key - the result cannot be stored at runtime; use an Object key or a point-based query"),
+					*NodePath, OptionIndex, ItemKind,
+					ItemClass ? *ItemClass->GetName() : TEXT("None"),
+					*KeyName.ToString(),
+					KeyClass ? *KeyClass->GetName() : TEXT("None"));
+				return false;
+			}
+			OptionIndex++;
+		}
+		return true;
+	}
+
 	/** Build one service/decorator node from its spec object: {"type":...,"name":...,"params":{...}}. */
 	UBTNode* BuildAuxNode(UBehaviorTree* Tree, const TSet<FName>& KnownBlackboardKeys, const FString& Kind, const TSharedPtr<FJsonValue>& SpecValue, const FString& NodePath, int32& OutNodeCount, FString& OutError)
 	{
@@ -561,7 +707,12 @@ namespace
 		{
 			Params = MakeShared<FJsonObject>();
 		}
+		AutoSetRunEQSUseBBKey(AuxClass, Params);
 		if (!ApplyParamsToContainer(AuxNode->GetClass(), AuxNode, Params, &KnownBlackboardKeys, NodePath, OutError))
+		{
+			return nullptr;
+		}
+		if (!ValidateRunEQSKeyTypes(AuxNode, Tree ? Tree->BlackboardAsset : nullptr, NodePath, OutError))
 		{
 			return nullptr;
 		}
@@ -605,7 +756,12 @@ namespace
 		{
 			Params = MakeShared<FJsonObject>();
 		}
+		AutoSetRunEQSUseBBKey(NodeClass, Params);
 		if (!ApplyParamsToContainer(Node->GetClass(), Node, Params, &KnownBlackboardKeys, NodePath, OutError))
+		{
+			return nullptr;
+		}
+		if (!ValidateRunEQSKeyTypes(Node, Tree ? Tree->BlackboardAsset : nullptr, NodePath, OutError))
 		{
 			return nullptr;
 		}
@@ -1090,7 +1246,11 @@ FString UBTForgeLibrary::CreateBehaviorTreeAsset(const FString& AssetPath, const
 		FString Type;
 	};
 	TArray<FKeySpec> ValidatedKeys;
-	TSet<FString> SeenNames;
+	TSet<FName> SeenNames;
+	// Probe what a fresh blackboard already contains (SelfActor today) without creating
+	// the asset: the same PostInitProperties path runs for a transient object.
+	TSet<FName> ExistingKeys;
+	CollectExistingBlackboardKeys(NewObject<UBlackboardData>(GetTransientPackage()), ExistingKeys);
 	for (int32 KeyIndex = 0; KeyIndex < KeySpecs.Num(); KeyIndex++)
 	{
 		const TSharedPtr<FJsonObject>* KeyObject;
@@ -1108,11 +1268,16 @@ FString UBTForgeLibrary::CreateBehaviorTreeAsset(const FString& AssetPath, const
 			return MakeErrorJson(FString::Printf(TEXT("keys[%d] ('%s'): unknown type '%s'. Allowed: Bool, Int, Float, String, Name, Vector, Rotator, Object"),
 				KeyIndex, *Spec.Name, *Spec.Type));
 		}
-		if (SeenNames.Contains(Spec.Name))
+		const FName KeyFName(*Spec.Name);
+		if (ExistingKeys.Contains(KeyFName))
+		{
+			return MakeErrorJson(ExistingBlackboardKeyError(KeyIndex, Spec.Name, ExistingKeys));
+		}
+		if (SeenNames.Contains(KeyFName))
 		{
 			return MakeErrorJson(FString::Printf(TEXT("keys[%d]: duplicate key name '%s'"), KeyIndex, *Spec.Name));
 		}
-		SeenNames.Add(Spec.Name);
+		SeenNames.Add(KeyFName);
 		ValidatedKeys.Add(Spec);
 	}
 
@@ -1299,7 +1464,11 @@ FString UBTForgeLibrary::ValidateBehaviorTree(const FString& TreeJson, const FSt
 	}
 
 	UBlackboardData* Blackboard = NewObject<UBlackboardData>(GetTransientPackage());
-	TSet<FName> KnownBlackboardKeys;
+	// The engine already added its persistent keys (SelfActor) in PostInitProperties:
+	// they are valid node key references and must not be re-declared by the spec.
+	TSet<FName> ExistingKeys;
+	CollectExistingBlackboardKeys(Blackboard, ExistingKeys);
+	TSet<FName> KnownBlackboardKeys = ExistingKeys;
 	const TArray<TSharedPtr<FJsonValue>>* RawKeySpecs = nullptr;
 	if (!BlackboardSpec->TryGetArrayField(TEXT("keys"), RawKeySpecs) || RawKeySpecs == nullptr)
 	{
@@ -1324,11 +1493,16 @@ FString UBTForgeLibrary::ValidateBehaviorTree(const FString& TreeJson, const FSt
 			return MakeErrorJson(FString::Printf(TEXT("keys[%d] ('%s'): unknown type '%s'. Allowed: Bool, Int, Float, String, Name, Vector, Rotator, Object"),
 				KeyIndex, *KeyName, *KeyType));
 		}
-		if (KnownBlackboardKeys.Contains(FName(*KeyName)))
+		const FName KeyFName(*KeyName);
+		if (ExistingKeys.Contains(KeyFName))
+		{
+			return MakeErrorJson(ExistingBlackboardKeyError(KeyIndex, KeyName, ExistingKeys));
+		}
+		if (KnownBlackboardKeys.Contains(KeyFName))
 		{
 			return MakeErrorJson(FString::Printf(TEXT("keys[%d]: duplicate key name '%s'"), KeyIndex, *KeyName));
 		}
-		KnownBlackboardKeys.Add(FName(*KeyName));
+		KnownBlackboardKeys.Add(KeyFName);
 		FBlackboardEntry& Entry = Blackboard->Keys.AddDefaulted_GetRef();
 		Entry.EntryName = FName(*KeyName);
 		Entry.KeyType = NewObject<UBlackboardKeyType>(Blackboard, ResolveBlackboardKeyType(KeyType));
