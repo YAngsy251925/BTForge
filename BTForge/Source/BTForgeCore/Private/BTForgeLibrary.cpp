@@ -1006,9 +1006,12 @@ namespace
 				Dead->SetStringField(TEXT("readBy"), FString::Join(Flow.Readers, TEXT(", ")));
 				Dead->SetStringField(TEXT("reason"), TEXT("read by decorators/tasks but never written in this tree; declare it in externalKeys or add a writer"));
 				DeadGates.Add(MakeShared<FJsonValueObject>(Dead));
-				if (OutFatal.IsEmpty())
+				// An unregistered node with key selectors could be the writer we
+				// cannot see, so a "dead" gate is only conclusive when every node in
+				// the tree has known effects.
+				if (OutFatal.IsEmpty() && UnknownEffectClasses.Num() == 0)
 				{
-					OutFatal = FString::Printf(TEXT("dead gate: key '%s' is read at %s but never written; declare it in externalKeys or add a writer"),
+					OutFatal = FString::Printf(TEXT("dead gate: key '%s' is read at %s but never written; add a writer or declare it in externalKeys (on the tree root - works for build too - or in BlackboardJson)"),
 						*KeyName.ToString(), *Flow.Readers[0]);
 				}
 			}
@@ -1067,59 +1070,75 @@ namespace
 			Unknown.Add(MakeShared<FJsonValueString>(ClassName));
 		}
 		OutDataflow->SetArrayField(TEXT("unknownEffects"), Unknown);
-		OutDataflow->SetStringField(TEXT("note"), TEXT("deadGates fail the build; declare externalKeys for keys fed from outside the tree. unregistered blueprint node classes are listed in unknownEffects - declare their effects via nodeEffects instead of guessing"));
+		OutDataflow->SetStringField(TEXT("note"), TEXT("deadGates fail the build when every node's effects are known; with unregistered nodes present they are reported but not fatal - declare nodeEffects for those classes. externalKeys declares keys fed from outside the tree (tree root works for build, tree root or BlackboardJson for validate)"));
 	}
 
 	/** Parse the optional spec-level declarations: "externalKeys": {name: reason}
 	 *  and "nodeEffects": {ClassName: {writes:[...], reads:[...]}}. */
-	bool ParseKeyDeclarations(const TSharedPtr<FJsonObject>& RootSpec,
+	bool ParseKeyDeclarations(const TSharedPtr<FJsonObject>& RootSpec, const TSharedPtr<FJsonObject>& BlackboardSpec,
 		TMap<FString, FString>& OutExternalKeys, TMap<FName, TMap<FName, bool>>& OutNodeEffects, FString& OutError)
 	{
-		const TSharedPtr<FJsonObject>* ExternalObject = nullptr;
-		if (RootSpec->TryGetObjectField(TEXT("externalKeys"), ExternalObject) && ExternalObject->IsValid())
+		// Declarations live in the blackboard spec when there is one (that is the
+		// contract about keys) and are still accepted on the tree root for callers
+		// that only carry a tree. The blackboard wins on conflicts.
+		auto ParseFrom = [&](const TSharedPtr<FJsonObject>& Source) -> bool
 		{
-			for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*ExternalObject)->Values)
+			if (!Source.IsValid())
 			{
-				FString Reason;
-				Pair.Value->TryGetString(Reason);
-				OutExternalKeys.Add(Pair.Key, Reason);
+				return true;
 			}
-		}
-		const TSharedPtr<FJsonObject>* EffectsObject = nullptr;
-		if (RootSpec->TryGetObjectField(TEXT("nodeEffects"), EffectsObject) && EffectsObject->IsValid())
-		{
-			for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*EffectsObject)->Values)
+			const TSharedPtr<FJsonObject>* ExternalObject = nullptr;
+			if (Source->TryGetObjectField(TEXT("externalKeys"), ExternalObject) && ExternalObject->IsValid())
 			{
-				const TSharedPtr<FJsonObject>* Effect = nullptr;
-				if (!Pair.Value->TryGetObject(Effect) || !Effect->IsValid())
+				for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*ExternalObject)->Values)
 				{
-					OutError = FString::Printf(TEXT("nodeEffects.%s: expected {\"writes\":[...],\"reads\":[...]}"), *Pair.Key);
-					return false;
+					FString Reason;
+					Pair.Value->TryGetString(Reason);
+					OutExternalKeys.Add(Pair.Key, Reason);
 				}
-				TMap<FName, bool> Props;
-				for (const TCHAR* FieldName : { TEXT("writes"), TEXT("reads") })
+			}
+			const TSharedPtr<FJsonObject>* EffectsObject = nullptr;
+			if (Source->TryGetObjectField(TEXT("nodeEffects"), EffectsObject) && EffectsObject->IsValid())
+			{
+				for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*EffectsObject)->Values)
 				{
-					const bool bWrite = FCString::Strcmp(FieldName, TEXT("writes")) == 0;
-					const TArray<TSharedPtr<FJsonValue>>* List = nullptr;
-					(*Effect)->TryGetArrayField(FieldName, List);
-					if (List)
+					const TSharedPtr<FJsonObject>* Effect = nullptr;
+					if (!Pair.Value->TryGetObject(Effect) || !Effect->IsValid())
 					{
-						for (const TSharedPtr<FJsonValue>& Item : *List)
+						OutError = FString::Printf(TEXT("nodeEffects.%s: expected {\"writes\":[...],\"reads\":[...]}"), *Pair.Key);
+						return false;
+					}
+					TMap<FName, bool> Props;
+					for (const TCHAR* FieldName : { TEXT("writes"), TEXT("reads") })
+					{
+						const bool bWrite = FCString::Strcmp(FieldName, TEXT("writes")) == 0;
+						const TArray<TSharedPtr<FJsonValue>>* List = nullptr;
+						(*Effect)->TryGetArrayField(FieldName, List);
+						if (List)
 						{
-							FString PropName;
-							if (!Item->TryGetString(PropName) || PropName.IsEmpty())
+							for (const TSharedPtr<FJsonValue>& Item : *List)
 							{
-								OutError = FString::Printf(TEXT("nodeEffects.%s.%s: expected property name strings"), *Pair.Key, FieldName);
-								return false;
+								FString PropName;
+								if (!Item->TryGetString(PropName) || PropName.IsEmpty())
+								{
+									OutError = FString::Printf(TEXT("nodeEffects.%s.%s: expected property name strings"), *Pair.Key, FieldName);
+									return false;
+								}
+								Props.Add(FName(*PropName), bWrite);
 							}
-							Props.Add(FName(*PropName), bWrite);
 						}
 					}
+					OutNodeEffects.Add(FName(*Pair.Key), Props);
 				}
-				OutNodeEffects.Add(FName(*Pair.Key), Props);
 			}
+			return true;
+		};
+
+		if (!ParseFrom(RootSpec))
+		{
+			return false;
 		}
-		return true;
+		return ParseFrom(BlackboardSpec);
 	}
 
 	/** Run the dataflow analysis and finish a validate/build result. Fatal
@@ -1187,6 +1206,14 @@ namespace
 		if (!ApplyParamsToContainer(AuxNode->GetClass(), AuxNode, Params, &KnownBlackboardKeys, NodePath, OutError))
 		{
 			return nullptr;
+		}
+		{
+			FName DbgKey;
+			FProperty* DbgProp = AuxNode->GetClass()->FindPropertyByName(TEXT("BlackboardKey"));
+			if (DbgProp && ReadSelectorKeyName(DbgProp, DbgProp->ContainerPtrToValuePtr<void>(AuxNode), DbgKey))
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[BTForge diag] %s: BlackboardKey after apply = '%s'"), *NodePath, *DbgKey.ToString());
+			}
 		}
 		if (!ValidateRunEQSKeyTypes(AuxNode, Tree ? Tree->BlackboardAsset : nullptr, NodePath, OutError))
 		{
@@ -1521,13 +1548,47 @@ namespace
 		}
 	}
 
-	TSharedRef<FJsonObject> DumpAuxNode(UBTNode* AuxNode)
+	/** Key bindings of a node: {property: {name, type}}. Only SelectedKeyName is read
+	 *  from the selector (the L1 fast-fail came from walking the struct's object
+	 *  pointers); the type is resolved from the blackboard asset by name. */
+	void DumpKeySelectors(UObject* Node, const UBlackboardData* Blackboard, const TSharedRef<FJsonObject>& OutNode)
+	{
+		TSharedRef<FJsonObject> Keys = MakeShared<FJsonObject>();
+		for (TFieldIterator<FProperty> It(Node->GetClass()); It; ++It)
+		{
+			FProperty* Property = *It;
+			FName KeyName;
+			if (!Property->IsA<FStructProperty>() || !ReadSelectorKeyName(Property, Property->ContainerPtrToValuePtr<void>(Node), KeyName))
+			{
+				continue;
+			}
+			TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+			Entry->SetStringField(TEXT("name"), KeyName.IsNone() ? FString() : KeyName.ToString());
+			FString TypeName;
+			if (Blackboard != nullptr && !KeyName.IsNone())
+			{
+				if (TSubclassOf<UBlackboardKeyType> KeyType = Blackboard->GetKeyType(Blackboard->GetKeyID(KeyName)))
+				{
+					TypeName = KeyType->GetName();
+				}
+			}
+			Entry->SetStringField(TEXT("type"), TypeName);
+			Keys->SetObjectField(Property->GetName(), Entry);
+		}
+		if (Keys->Values.Num() > 0)
+		{
+			OutNode->SetObjectField(TEXT("keys"), Keys);
+		}
+	}
+
+	TSharedRef<FJsonObject> DumpAuxNode(UBTNode* AuxNode, const UBlackboardData* Blackboard)
 	{
 		TSharedRef<FJsonObject> OutNode = MakeShared<FJsonObject>();
 		OutNode->SetStringField(TEXT("type"), AuxNode->GetClass()->GetName());
 		TSharedRef<FJsonObject> Params = MakeShared<FJsonObject>();
 		DumpScalarProperties(AuxNode, Params);
 		OutNode->SetObjectField(TEXT("params"), Params);
+		DumpKeySelectors(AuxNode, Blackboard, OutNode);
 		return OutNode;
 	}
 
@@ -1544,13 +1605,14 @@ namespace
 		}
 	}
 
-	TSharedRef<FJsonObject> DumpNode(UBTNode* Node)
+	TSharedRef<FJsonObject> DumpNode(UBTNode* Node, const UBlackboardData* Blackboard)
 	{
 		TSharedRef<FJsonObject> OutNode = MakeShared<FJsonObject>();
 		OutNode->SetStringField(TEXT("type"), Node->GetClass()->GetName());
 		TSharedRef<FJsonObject> Params = MakeShared<FJsonObject>();
 		DumpScalarProperties(Node, Params);
 		OutNode->SetObjectField(TEXT("params"), Params);
+		DumpKeySelectors(Node, Blackboard, OutNode);
 
 		if (const UBTCompositeNode* Composite = Cast<UBTCompositeNode>(Node))
 		{
@@ -1562,7 +1624,7 @@ namespace
 				{
 					if (Service)
 					{
-						Services.Add(MakeShared<FJsonValueObject>(DumpAuxNode(const_cast<UBTService*>(Service))));
+						Services.Add(MakeShared<FJsonValueObject>(DumpAuxNode(const_cast<UBTService*>(Service), Blackboard)));
 					}
 				}
 				OutNode->SetArrayField(TEXT("services"), Services);
@@ -1574,7 +1636,7 @@ namespace
 				const UBTNode* ChildNode = Child.ChildComposite ? static_cast<const UBTNode*>(Child.ChildComposite) : Child.ChildTask.Get();
 				if (ChildNode)
 				{
-					TSharedRef<FJsonObject> ChildJson = DumpNode(const_cast<UBTNode*>(ChildNode));
+					TSharedRef<FJsonObject> ChildJson = DumpNode(const_cast<UBTNode*>(ChildNode), Blackboard);
 
 					// Decorators gate entry to this child branch; DecoratorOps is
 					// the stack-encoded logic combination over the decorator list.
@@ -1585,7 +1647,7 @@ namespace
 						{
 							if (Decorator)
 							{
-								Decorators.Add(MakeShared<FJsonValueObject>(DumpAuxNode(const_cast<UBTDecorator*>(Decorator))));
+								Decorators.Add(MakeShared<FJsonValueObject>(DumpAuxNode(const_cast<UBTDecorator*>(Decorator), Blackboard)));
 							}
 						}
 						ChildJson->SetArrayField(TEXT("decorators"), Decorators);
@@ -1856,7 +1918,9 @@ FString UBTForgeLibrary::BuildBehaviorTree(const FString& AssetPath, const FStri
 
 	TMap<FString, FString> ExternalKeys;
 	TMap<FName, TMap<FName, bool>> NodeEffects;
-	if (!ParseKeyDeclarations(RootSpec, ExternalKeys, NodeEffects, Error))
+	// Build has no blackboard JSON (the asset already owns its keys): declarations
+	// come from the tree root here; ValidateBehaviorTree accepts either place.
+	if (!ParseKeyDeclarations(RootSpec, nullptr, ExternalKeys, NodeEffects, Error))
 	{
 		return MakeErrorJson(Error);
 	}
@@ -1893,6 +1957,13 @@ FString UBTForgeLibrary::BuildBehaviorTree(const FString& AssetPath, const FStri
 	}
 
 	Tree->RootNode = NewRoot;
+#if WITH_EDITORONLY_DATA
+	// The editor graph is only a view over the data chain. Dropping it makes the
+	// editor rebuild it from RootNode when the asset is opened; keeping a stale
+	// graph across rebuilds leaves graph nodes pointing at replaced node instances,
+	// which the editor shows as "class not found" while the tree itself still runs.
+	Tree->BTGraph = nullptr;
+#endif
 	InitializeNodesRecursive(NewRoot, Tree);
 	if (UEditorAssetSubsystem* AssetSubsystem = GEditor ? GEditor->GetEditorSubsystem<UEditorAssetSubsystem>() : nullptr)
 	{
@@ -1932,7 +2003,7 @@ FString UBTForgeLibrary::InspectBehaviorTree(const FString& AssetPath)
 
 	if (Tree->RootNode)
 	{
-		Result->SetObjectField(TEXT("root"), DumpNode(Tree->RootNode));
+		Result->SetObjectField(TEXT("root"), DumpNode(Tree->RootNode, Tree->BlackboardAsset));
 	}
 	else
 	{
@@ -2026,7 +2097,7 @@ FString UBTForgeLibrary::ValidateBehaviorTree(const FString& TreeJson, const FSt
 	FString Error;
 	TMap<FString, FString> ExternalKeys;
 	TMap<FName, TMap<FName, bool>> NodeEffects;
-	if (!ParseKeyDeclarations(RootSpec, ExternalKeys, NodeEffects, Error))
+	if (!ParseKeyDeclarations(RootSpec, BlackboardSpec, ExternalKeys, NodeEffects, Error))
 	{
 		return MakeErrorJson(Error);
 	}
