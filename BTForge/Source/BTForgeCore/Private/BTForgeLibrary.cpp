@@ -579,11 +579,12 @@ namespace
 		return false;
 	}
 
-	/** Binding a blackboard key on a RunEQS node means wanting the result, so let
-	 *  bUseBBKey follow the binding unless the spec set it explicitly. */
+	/** Binding a blackboard key on the RunEQS task means wanting the result, so let
+	 *  bUseBBKey follow the binding unless the spec set it explicitly. The SERVICE
+	 *  variant (UBTService_RunEQS) has no such flag - it stores unconditionally. */
 	void AutoSetRunEQSUseBBKey(UClass* NodeClass, const TSharedPtr<FJsonObject>& Params)
 	{
-		if ((NodeClass->IsChildOf<UBTTask_RunEQSQuery>() || NodeClass->IsChildOf<UBTService_RunEQS>())
+		if (NodeClass->IsChildOf<UBTTask_RunEQSQuery>()
 			&& Params->HasField(TEXT("BlackboardKey")) && !Params->HasField(TEXT("bUseBBKey")))
 		{
 			Params->SetBoolField(TEXT("bUseBBKey"), true);
@@ -662,6 +663,481 @@ namespace
 			OptionIndex++;
 		}
 		return true;
+	}
+
+	// ------------------------------------------------------------------ key dataflow (P1)
+
+	/** One key-selector usage of a node kind. Registration is by class NAME so
+	 *  5.6+-only engine classes can be listed and simply resolve to nothing on
+	 *  5.5 (zero version conditionals). */
+	struct FKeyEffectEntry
+	{
+		const TCHAR* ClassName;
+		const TCHAR* Property;
+		bool bWrite;
+	};
+
+	const TArray<FKeyEffectEntry>& GetKeyEffectRegistry()
+	{
+		static const TArray<FKeyEffectEntry> Registry =
+		{
+			// The RunEQS task stores only when bUseBBKey is set (modeled at
+			// analysis time); the service stores unconditionally (it has no flag).
+			{ TEXT("BTTask_RunEQSQuery"), TEXT("BlackboardKey"), true },
+			{ TEXT("BTService_RunEQS"), TEXT("BlackboardKey"), true },
+			// BT Forge node library
+			{ TEXT("BTForgeTask_ComputeValue"), TEXT("LeftKey"), false },
+			{ TEXT("BTForgeTask_ComputeValue"), TEXT("RightKey"), false },
+			{ TEXT("BTForgeTask_ComputeValue"), TEXT("ResultKey"), true },
+			{ TEXT("BTForgeService_SetBlackboardValue"), TEXT("KeyToSet"), true },
+			{ TEXT("BTForgeService_SetBlackboardValue"), TEXT("SourceKey"), false },
+			{ TEXT("BTForgeService_UpdateDistance"), TEXT("SourceKey"), false },
+			{ TEXT("BTForgeService_UpdateDistance"), TEXT("TargetKey"), false },
+			{ TEXT("BTForgeService_UpdateDistance"), TEXT("ResultKey"), true },
+			{ TEXT("BTForgeTask_LogMessage"), TEXT("KeyToLog"), false },
+			// engine readers
+			{ TEXT("BTTask_MoveTo"), TEXT("BlackboardKey"), false },
+			{ TEXT("BTTask_RotateToFaceBBEntry"), TEXT("BlackboardKey"), false },
+			{ TEXT("BTTask_MoveDirectlyToward"), TEXT("BlackboardKey"), false },
+			// engine writers, 5.6+ only (resolve to nothing on 5.5)
+			{ TEXT("BTTask_SetKeyValueBool"), TEXT("BlackboardKey"), true },
+			{ TEXT("BTTask_SetKeyValueClass"), TEXT("BlackboardKey"), true },
+			{ TEXT("BTTask_SetKeyValueEnum"), TEXT("BlackboardKey"), true },
+			{ TEXT("BTTask_SetKeyValueInt32"), TEXT("BlackboardKey"), true },
+			{ TEXT("BTTask_SetKeyValueFloat"), TEXT("BlackboardKey"), true },
+			{ TEXT("BTTask_SetKeyValueName"), TEXT("BlackboardKey"), true },
+			{ TEXT("BTTask_SetKeyValueString"), TEXT("BlackboardKey"), true },
+			{ TEXT("BTTask_SetKeyValueObject"), TEXT("BlackboardKey"), true },
+			{ TEXT("BTTask_SetKeyValueRotator"), TEXT("BlackboardKey"), true },
+			{ TEXT("BTTask_SetKeyValueStruct"), TEXT("BlackboardKey"), true },
+			{ TEXT("BTTask_SetKeyValueVector"), TEXT("BlackboardKey"), true },
+		};
+		return Registry;
+	}
+
+	/** Guarded single-field read of a FBlackboardKeySelector's SelectedKeyName.
+	 *  This is the ONLY selector access the readback does: the L1 forensics
+	 *  crash (Core.dll fast-fail on Lyra's bot tree) came from walking the
+	 *  struct's object-pointer members; a named FName member read never
+	 *  dereferences them. */
+	bool ReadSelectorKeyName(FProperty* SelectorProperty, void* SelectorData, FName& OutKeyName)
+	{
+		const FStructProperty* SelectorStruct = CastField<FStructProperty>(SelectorProperty);
+		if (SelectorStruct == nullptr || SelectorStruct->Struct == nullptr || SelectorData == nullptr)
+		{
+			return false;
+		}
+		const FNameProperty* NameProperty = CastField<FNameProperty>(SelectorStruct->Struct->FindPropertyByName(TEXT("SelectedKeyName")));
+		if (NameProperty == nullptr)
+		{
+			return false;
+		}
+		OutKeyName = NameProperty->GetPropertyValue(NameProperty->ContainerPtrToValuePtr<void>(SelectorData));
+		return true;
+	}
+
+	/** Effects for one node class: registry entries matched along the parent
+	 *  chain (blueprint subclasses of registered natives inherit their
+	 *  effects), plus the spec-level override. Decorators are handled
+	 *  generically as readers by the analyzer. Returns false when the class
+	 *  (or none of its parents) is registered - the caller records it as an
+	 *  unknown-effects node instead of guessing. */
+	bool CollectKeyEffects(UClass* NodeClass, const TMap<FName, TMap<FName, bool>>& NodeEffects, TMap<FName, bool>& OutEffects, bool& bOverridden)
+	{
+		bOverridden = false;
+		// spec-level override wins, matched by class name (closest first)
+		for (UClass* C = NodeClass; C && C != UObject::StaticClass(); C = C->GetSuperClass())
+		{
+			if (const TMap<FName, bool>* Override = NodeEffects.Find(C->GetFName()))
+			{
+				OutEffects = *Override;
+				bOverridden = true;
+				return true;
+			}
+		}
+		for (UClass* C = NodeClass; C && C != UObject::StaticClass(); C = C->GetSuperClass())
+		{
+			bool bMatched = false;
+			for (const FKeyEffectEntry& Entry : GetKeyEffectRegistry())
+			{
+				if (C->GetName().Equals(Entry.ClassName))
+				{
+					OutEffects.Add(FName(Entry.Property), Entry.bWrite);
+					bMatched = true;
+				}
+			}
+			if (bMatched)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** Path-segment-aware prefix test ("root.children[1]" is not a prefix of
+	 *  "root.children[10]"). */
+	bool IsScopePrefix(const FString& WriterScope, const FString& ReaderScope)
+	{
+		if (WriterScope.Equals(ReaderScope))
+		{
+			return true;
+		}
+		if (!ReaderScope.StartsWith(WriterScope))
+		{
+			return false;
+		}
+		return ReaderScope.Len() > WriterScope.Len() && ReaderScope[WriterScope.Len()] == TEXT('.');
+	}
+
+	/** One aggregated key flow across the built tree. */
+	struct FKeyFlow
+	{
+		TArray<FString> Writers;
+		TArray<FString> Readers;
+		TArray<FString> WriterScopes;
+		TArray<FString> ReaderScopes;
+		TArray<int32> ReaderAbortModes; // decorators only; -1 otherwise
+		bool bExternal = false;
+		FString ExternalReason;
+	};
+
+	/** Walk the built tree, aggregate key flows and classify them. Fatal
+	 *  findings (dead gates, EQS item-type mismatches) come back through
+	 *  OutFatal; non-fatal ones (orphan writers, scope, abort, unknown
+	 *  effects) land in the dataflow report. */
+	void AnalyzeKeyDataflow(UBTCompositeNode* Root, const UBlackboardData* BlackboardAsset,
+		const TMap<FString, FString>& ExternalKeys, const TMap<FName, TMap<FName, bool>>& NodeEffects,
+		const TSharedRef<FJsonObject>& OutDataflow, FString& OutFatal)
+	{
+		TMap<FName, FKeyFlow> Flows;
+		TSet<FString> UnknownEffectClasses;
+
+		// One walk, two bookkeeping arrays: each node carries its own path and
+		// its "scope" (the nearest enclosing composite - the branch whose
+		// activation is required for the node to run).
+		TFunction<void(UBTNode* Node, const FString& Path, const FString& Scope, bool bIsDecorator)> Visit =
+			[&](UBTNode* Node, const FString& Path, const FString& Scope, bool bIsDecorator)
+		{
+			UClass* NodeClass = Node->GetClass();
+			TMap<FName, bool> Effects;
+			bool bOverridden = false;
+			const bool bRegistered = CollectKeyEffects(NodeClass, NodeEffects, Effects, bOverridden);
+
+			// Decorators are readers by definition: every key selector on a
+			// decorator is a read regardless of registration.
+			if (!bRegistered && bIsDecorator)
+			{
+				for (TFieldIterator<FProperty> It(NodeClass); It; ++It)
+				{
+					FName KeyName;
+					if (It->IsA<FStructProperty>() && ReadSelectorKeyName(*It, It->ContainerPtrToValuePtr<void>(Node), KeyName) && !KeyName.IsNone())
+					{
+						Effects.Add(It->GetFName(), false);
+					}
+				}
+			}
+
+			if (Effects.Num() == 0)
+			{
+				// unregistered and not a decorator: does the class even carry
+				// key selectors? If yes, report it instead of guessing.
+				for (TFieldIterator<FProperty> It(NodeClass); It; ++It)
+				{
+					FName Unused;
+					if (It->IsA<FStructProperty>() && ReadSelectorKeyName(*It, It->ContainerPtrToValuePtr<void>(Node), Unused))
+					{
+						UnknownEffectClasses.Add(NodeClass->GetName());
+						break;
+					}
+				}
+			}
+			else
+			{
+			for (const TPair<FName, bool>& Effect : Effects)
+			{
+				FProperty* SelectorProperty = NodeClass->FindPropertyByName(Effect.Key);
+				if (SelectorProperty == nullptr)
+				{
+					continue;
+				}
+				FName KeyName;
+				if (!ReadSelectorKeyName(SelectorProperty, SelectorProperty->ContainerPtrToValuePtr<void>(Node), KeyName) || KeyName.IsNone())
+				{
+					continue; // unbound selector: neither reads nor writes
+				}
+				FKeyFlow& Flow = Flows.FindOrAdd(KeyName);
+				if (Effect.Value)
+				{
+					// the RunEQS task stores only when bUseBBKey is set
+					bool bStores = true;
+					if (NodeClass->IsChildOf<UBTTask_RunEQSQuery>())
+					{
+						if (const FBoolProperty* UseBBKey = CastField<FBoolProperty>(NodeClass->FindPropertyByName(TEXT("bUseBBKey"))))
+						{
+							bStores = UseBBKey->GetPropertyValue(UseBBKey->ContainerPtrToValuePtr<void>(Node));
+						}
+					}
+					if (bStores)
+					{
+						Flow.Writers.Add(Path);
+						Flow.WriterScopes.Add(Scope);
+					}
+				}
+				else
+				{
+					Flow.Readers.Add(Path);
+					Flow.ReaderScopes.Add(Scope);
+					int32 AbortMode = -1;
+					if (bIsDecorator)
+					{
+						if (const FByteProperty* AbortProperty = CastField<FByteProperty>(NodeClass->FindPropertyByName(TEXT("FlowAbortMode"))))
+						{
+							AbortMode = static_cast<int32>(AbortProperty->GetPropertyValue(AbortProperty->ContainerPtrToValuePtr<void>(Node)));
+						}
+					}
+					Flow.ReaderAbortModes.Add(AbortMode);
+				}
+			}
+			}
+
+			// recurse into composites (children already carry their services)
+			if (const UBTCompositeNode* Composite = Cast<UBTCompositeNode>(Node))
+			{
+				for (int32 Index = 0; Index < Composite->Children.Num(); Index++)
+				{
+					const FBTCompositeChild& Child = Composite->Children[Index];
+					const FString ChildPath = FString::Printf(TEXT("%s.children[%d]"), *Path, Index);
+					for (int32 DecoratorIndex = 0; DecoratorIndex < Child.Decorators.Num(); DecoratorIndex++)
+					{
+						if (Child.Decorators[DecoratorIndex])
+						{
+							Visit(Child.Decorators[DecoratorIndex],
+								FString::Printf(TEXT("%s.decorators[%d]"), *ChildPath, DecoratorIndex),
+								Path, true); // a decorator is evaluated by its HOST composite
+						}
+					}
+					UBTNode* ChildNode = Child.ChildComposite ? static_cast<UBTNode*>(Child.ChildComposite) : Child.ChildTask.Get();
+					if (ChildNode)
+					{
+						Visit(ChildNode, ChildPath, ChildPath, false);
+					}
+				}
+				for (int32 ServiceIndex = 0; ServiceIndex < Composite->Services.Num(); ServiceIndex++)
+				{
+					if (Composite->Services[ServiceIndex])
+					{
+						Visit(Composite->Services[ServiceIndex],
+							FString::Printf(TEXT("%s.services[%d]"), *Path, ServiceIndex),
+							Path, false); // a service's scope is its host branch
+					}
+				}
+			}
+		};
+		Visit(Root, TEXT("root"), TEXT("root"), false);
+
+		// aggregate the report
+		TArray<TSharedPtr<FJsonValue>> KeyReports;
+		TArray<TSharedPtr<FJsonValue>> DeadGates;
+		TArray<TSharedPtr<FJsonValue>> OrphanWriters;
+		TArray<TSharedPtr<FJsonValue>> ScopeWarnings;
+		TArray<TSharedPtr<FJsonValue>> AbortWarnings;
+		// FName lacks operator< on 5.5 - sort lexically for deterministic output
+		Flows.KeySort([](const FName& A, const FName& B) { return A.ToString() < B.ToString(); });
+		for (const TPair<FName, FKeyFlow>& Pair : Flows)
+		{
+			const FName KeyName = Pair.Key;
+			const FKeyFlow& Flow = Pair.Value;
+
+			bool bExternal = Flow.bExternal;
+			FString Reason = Flow.ExternalReason;
+			if (const FString* Declared = ExternalKeys.Find(KeyName.ToString()))
+			{
+				bExternal = true;
+				Reason = *Declared;
+			}
+			// the engine writes the SelfActor key when the blackboard initializes
+			// (AAIController::InitializeBlackboard) - implicitly external.
+			if (KeyName == FBlackboard::KeySelf)
+			{
+				bExternal = true;
+				if (Reason.IsEmpty())
+				{
+					Reason = TEXT("engine-written: AIController sets SelfActor on blackboard init");
+				}
+			}
+
+			const bool bHasWriter = Flow.Writers.Num() > 0;
+			const bool bHasReader = Flow.Readers.Num() > 0;
+
+			FString TypeString = TEXT("(unresolved)");
+			if (BlackboardAsset)
+			{
+				if (TSubclassOf<UBlackboardKeyType> KeyTypeClass = BlackboardAsset->GetKeyType(BlackboardAsset->GetKeyID(KeyName)))
+				{
+					TypeString = KeyTypeClass->GetName();
+				}
+			}
+
+			TSharedRef<FJsonObject> KeyReport = MakeShared<FJsonObject>();
+			KeyReport->SetStringField(TEXT("name"), KeyName.ToString());
+			KeyReport->SetStringField(TEXT("type"), TypeString);
+			KeyReport->SetBoolField(TEXT("external"), bExternal);
+			if (!Reason.IsEmpty())
+			{
+				KeyReport->SetStringField(TEXT("externalReason"), Reason);
+			}
+			auto StringArray = [](const TArray<FString>& In)
+			{
+				TArray<TSharedPtr<FJsonValue>> Out;
+				for (const FString& S : In)
+				{
+					Out.Add(MakeShared<FJsonValueString>(S));
+				}
+				return Out;
+			};
+			KeyReport->SetArrayField(TEXT("writtenBy"), StringArray(Flow.Writers));
+			KeyReport->SetArrayField(TEXT("readBy"), StringArray(Flow.Readers));
+			KeyReports.Add(MakeShared<FJsonValueObject>(KeyReport));
+
+			if (bHasReader && !bHasWriter && !bExternal)
+			{
+				TSharedRef<FJsonObject> Dead = MakeShared<FJsonObject>();
+				Dead->SetStringField(TEXT("key"), KeyName.ToString());
+				Dead->SetStringField(TEXT("readBy"), FString::Join(Flow.Readers, TEXT(", ")));
+				Dead->SetStringField(TEXT("reason"), TEXT("read by decorators/tasks but never written in this tree; declare it in externalKeys or add a writer"));
+				DeadGates.Add(MakeShared<FJsonValueObject>(Dead));
+				if (OutFatal.IsEmpty())
+				{
+					OutFatal = FString::Printf(TEXT("dead gate: key '%s' is read at %s but never written; declare it in externalKeys or add a writer"),
+						*KeyName.ToString(), *Flow.Readers[0]);
+				}
+			}
+			if (bHasWriter && !bHasReader && !bExternal)
+			{
+				TSharedRef<FJsonObject> Orphan = MakeShared<FJsonObject>();
+				Orphan->SetStringField(TEXT("key"), KeyName.ToString());
+				Orphan->SetStringField(TEXT("writtenBy"), FString::Join(Flow.Writers, TEXT(", ")));
+				Orphan->SetStringField(TEXT("reason"), TEXT("written but never read inside this tree (test instrumentation or a missing consumer)"));
+				OrphanWriters.Add(MakeShared<FJsonValueObject>(Orphan));
+			}
+
+			// scope: a writer only feeds readers inside branches at or below its
+			// own mount point (services tick with their branch)
+			for (int32 ri = 0; ri < Flow.Readers.Num(); ri++)
+			{
+				for (int32 wi = 0; wi < Flow.Writers.Num(); wi++)
+				{
+					if (!IsScopePrefix(Flow.WriterScopes[wi], Flow.ReaderScopes[ri]))
+					{
+						TSharedRef<FJsonObject> Scope = MakeShared<FJsonObject>();
+						Scope->SetStringField(TEXT("key"), KeyName.ToString());
+						Scope->SetStringField(TEXT("producer"), Flow.Writers[wi]);
+						Scope->SetStringField(TEXT("consumer"), Flow.Readers[ri]);
+						Scope->SetStringField(TEXT("reason"), TEXT("writer's branch does not contain the reader's branch; the service only ticks while its own branch is active"));
+						ScopeWarnings.Add(MakeShared<FJsonValueObject>(Scope));
+						break; // one warning per reader is enough
+					}
+				}
+			}
+
+			// abort: a gated branch whose key flips mid-run will not re-evaluate
+			// unless the decorator declares a FlowAbortMode
+			for (int32 ri = 0; ri < Flow.Readers.Num(); ri++)
+			{
+				if (Flow.ReaderAbortModes[ri] != 0 || !bHasWriter)
+				{
+					continue;
+				}
+				TSharedRef<FJsonObject> Abort = MakeShared<FJsonObject>();
+				Abort->SetStringField(TEXT("decorator"), Flow.Readers[ri]);
+				Abort->SetStringField(TEXT("key"), KeyName.ToString());
+				Abort->SetStringField(TEXT("reason"), TEXT("FlowAbortMode=None: the branch will not re-evaluate when this key changes"));
+				AbortWarnings.Add(MakeShared<FJsonValueObject>(Abort));
+			}
+		}
+
+		OutDataflow->SetArrayField(TEXT("keys"), KeyReports);
+		OutDataflow->SetArrayField(TEXT("deadGates"), DeadGates);
+		OutDataflow->SetArrayField(TEXT("orphanWriters"), OrphanWriters);
+		OutDataflow->SetArrayField(TEXT("scopeWarnings"), ScopeWarnings);
+		OutDataflow->SetArrayField(TEXT("abortWarnings"), AbortWarnings);
+		TArray<TSharedPtr<FJsonValue>> Unknown;
+		for (const FString& ClassName : UnknownEffectClasses)
+		{
+			Unknown.Add(MakeShared<FJsonValueString>(ClassName));
+		}
+		OutDataflow->SetArrayField(TEXT("unknownEffects"), Unknown);
+		OutDataflow->SetStringField(TEXT("note"), TEXT("deadGates fail the build; declare externalKeys for keys fed from outside the tree. unregistered blueprint node classes are listed in unknownEffects - declare their effects via nodeEffects instead of guessing"));
+	}
+
+	/** Parse the optional spec-level declarations: "externalKeys": {name: reason}
+	 *  and "nodeEffects": {ClassName: {writes:[...], reads:[...]}}. */
+	bool ParseKeyDeclarations(const TSharedPtr<FJsonObject>& RootSpec,
+		TMap<FString, FString>& OutExternalKeys, TMap<FName, TMap<FName, bool>>& OutNodeEffects, FString& OutError)
+	{
+		const TSharedPtr<FJsonObject>* ExternalObject = nullptr;
+		if (RootSpec->TryGetObjectField(TEXT("externalKeys"), ExternalObject) && ExternalObject->IsValid())
+		{
+			for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*ExternalObject)->Values)
+			{
+				FString Reason;
+				Pair.Value->TryGetString(Reason);
+				OutExternalKeys.Add(Pair.Key, Reason);
+			}
+		}
+		const TSharedPtr<FJsonObject>* EffectsObject = nullptr;
+		if (RootSpec->TryGetObjectField(TEXT("nodeEffects"), EffectsObject) && EffectsObject->IsValid())
+		{
+			for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*EffectsObject)->Values)
+			{
+				const TSharedPtr<FJsonObject>* Effect = nullptr;
+				if (!Pair.Value->TryGetObject(Effect) || !Effect->IsValid())
+				{
+					OutError = FString::Printf(TEXT("nodeEffects.%s: expected {\"writes\":[...],\"reads\":[...]}"), *Pair.Key);
+					return false;
+				}
+				TMap<FName, bool> Props;
+				for (const TCHAR* FieldName : { TEXT("writes"), TEXT("reads") })
+				{
+					const bool bWrite = FCString::Strcmp(FieldName, TEXT("writes")) == 0;
+					const TArray<TSharedPtr<FJsonValue>>* List = nullptr;
+					(*Effect)->TryGetArrayField(FieldName, List);
+					if (List)
+					{
+						for (const TSharedPtr<FJsonValue>& Item : *List)
+						{
+							FString PropName;
+							if (!Item->TryGetString(PropName) || PropName.IsEmpty())
+							{
+								OutError = FString::Printf(TEXT("nodeEffects.%s.%s: expected property name strings"), *Pair.Key, FieldName);
+								return false;
+							}
+							Props.Add(FName(*PropName), bWrite);
+						}
+					}
+				}
+				OutNodeEffects.Add(FName(*Pair.Key), Props);
+			}
+		}
+		return true;
+	}
+
+	/** Run the dataflow analysis and finish a validate/build result. Fatal
+	 *  findings (dead gates) flip ok:false with the dataflow attached. */
+	FString FinishWithKeyDataflow(UBehaviorTree* Tree, UBTCompositeNode* Root,
+		const TSharedPtr<FJsonObject>& RootSpec, const TMap<FString, FString>& ExternalKeys,
+		const TMap<FName, TMap<FName, bool>>& NodeEffects, TSharedRef<FJsonObject> Result)
+	{
+		TSharedRef<FJsonObject> Dataflow = MakeShared<FJsonObject>();
+		FString Fatal;
+		AnalyzeKeyDataflow(Root, Tree ? Tree->BlackboardAsset : nullptr, ExternalKeys, NodeEffects, Dataflow, Fatal);
+		Result->SetObjectField(TEXT("dataflow"), Dataflow);
+		if (!Fatal.IsEmpty())
+		{
+			Result->SetBoolField(TEXT("ok"), false);
+			Result->SetStringField(TEXT("error"), Fatal);
+		}
+		return JsonToString(Result);
 	}
 
 	/** Build one service/decorator node from its spec object: {"type":...,"name":...,"params":{...}}. */
@@ -1001,10 +1477,16 @@ namespace
 					return ReadPropertyAsJson(DefaultProperty, DefaultDataPtr);
 				}
 			}
-			// FBlackboardKeySelector key-name readback is temporarily disabled
-			// while hunting a deterministic abort (Core.dll fast-fail) triggered
-			// by inspecting Lyra's bot tree. Struct readback is limited to the
-			// FValueOrBBKey numeric half until the culprit is identified.
+			// FBlackboardKeySelector: report ONLY the bound key name. The L1
+			// forensics crash (Core.dll fast-fail on Lyra's bot tree) came from
+			// walking the struct's object-pointer members (AllowedTypes /
+			// SelectedKeyType); a named FName member read never touches them.
+			// Unbound selectors are omitted to keep dumps meaningful.
+			FName KeyName;
+			if (ReadSelectorKeyName(Property, DataPtr, KeyName) && !KeyName.IsNone())
+			{
+				return MakeShared<FJsonValueString>(KeyName.ToString());
+			}
 			return nullptr;
 		}
 		// Object/class references are NOT dumped for now: BP-authored assets can
@@ -1372,6 +1854,13 @@ FString UBTForgeLibrary::BuildBehaviorTree(const FString& AssetPath, const FStri
 		return MakeErrorJson(TEXT("root: 'decorators' gate a child's entry in its parent's children array; the root node has no parent slot"));
 	}
 
+	TMap<FString, FString> ExternalKeys;
+	TMap<FName, TMap<FName, bool>> NodeEffects;
+	if (!ParseKeyDeclarations(RootSpec, ExternalKeys, NodeEffects, Error))
+	{
+		return MakeErrorJson(Error);
+	}
+
 	UBTNode* NewRootNode = BuildNodeRecursive(Tree, KnownBlackboardKeys, RootSpec, TEXT("root"), NodeCount, Error);
 	if (NewRootNode == nullptr)
 	{
@@ -1381,6 +1870,26 @@ FString UBTForgeLibrary::BuildBehaviorTree(const FString& AssetPath, const FStri
 	if (NewRoot == nullptr)
 	{
 		return MakeErrorJson(TEXT("root node must be a composite (Sequence/Selector)"));
+	}
+
+	// Dataflow analysis runs BEFORE the tree is touched: a fatal finding leaves
+	// the saved asset completely untouched (failure does not persist).
+	TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("ok"), true);
+	Result->SetNumberField(TEXT("nodeCount"), NodeCount);
+	Result->SetStringField(TEXT("root"), NewRoot->GetClass()->GetName());
+	const FString ResultJson = FinishWithKeyDataflow(Tree, NewRoot, RootSpec, ExternalKeys, NodeEffects, Result);
+	{
+		TSharedPtr<FJsonObject> Parsed;
+		bool bOk = true;
+		if (FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(ResultJson), Parsed) && Parsed.IsValid())
+		{
+			Parsed->TryGetBoolField(TEXT("ok"), bOk);
+		}
+		if (!bOk)
+		{
+			return ResultJson; // dead gate: the saved tree is untouched
+		}
 	}
 
 	Tree->RootNode = NewRoot;
@@ -1394,11 +1903,7 @@ FString UBTForgeLibrary::BuildBehaviorTree(const FString& AssetPath, const FStri
 	}
 	// else: tree built in memory; next editor save will persist it.
 
-	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
-	Result->SetBoolField(TEXT("ok"), true);
-	Result->SetNumberField(TEXT("nodeCount"), NodeCount);
-	Result->SetStringField(TEXT("root"), NewRoot->GetClass()->GetName());
-	return JsonToString(Result.ToSharedRef());
+	return ResultJson;
 }
 
 FString UBTForgeLibrary::InspectBehaviorTree(const FString& AssetPath)
@@ -1519,6 +2024,12 @@ FString UBTForgeLibrary::ValidateBehaviorTree(const FString& TreeJson, const FSt
 
 	int32 NodeCount = 0;
 	FString Error;
+	TMap<FString, FString> ExternalKeys;
+	TMap<FName, TMap<FName, bool>> NodeEffects;
+	if (!ParseKeyDeclarations(RootSpec, ExternalKeys, NodeEffects, Error))
+	{
+		return MakeErrorJson(Error);
+	}
 	UBTNode* NewRootNode = BuildNodeRecursive(TransientTree, KnownBlackboardKeys, RootSpec, TEXT("root"), NodeCount, Error);
 	if (NewRootNode == nullptr)
 	{
@@ -1542,5 +2053,5 @@ FString UBTForgeLibrary::ValidateBehaviorTree(const FString& TreeJson, const FSt
 		KeyResults.Add(MakeShared<FJsonValueString>(KeyName.ToString()));
 	}
 	Result->SetArrayField(TEXT("blackboardKeys"), KeyResults);
-	return JsonToString(Result.ToSharedRef());
+	return FinishWithKeyDataflow(TransientTree, NewRoot, RootSpec, ExternalKeys, NodeEffects, Result.ToSharedRef());
 }

@@ -71,6 +71,11 @@ def rpc(method, params, timeout=8):
     return json.loads(body) if body.strip() else None
 
 
+import sys as _sys
+if "--port" in _sys.argv:
+    BASE = "http://127.0.0.1:%s/mcp" % _sys.argv[_sys.argv.index("--port") + 1]
+
+
 def call_tool(name, args, timeout=30):
     actual = OFFICIAL_NAMES.get(name, name) if OFFICIAL[0] else name
     r = rpc("tools/call", {"name": actual, "arguments": args}, timeout=timeout)

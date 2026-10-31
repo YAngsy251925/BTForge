@@ -24,6 +24,10 @@ public:
 	 * root); fill it with BuildBehaviorTree. Fails if either asset already
 	 * exists; nothing is overwritten.
 	 *
+	 * Every blackboard already carries the engine's SelfActor key (added by
+	 * UBlackboardData::PostInitProperties): do not declare it in the spec -
+	 * that is rejected - but nodes can reference it normally.
+	 *
 	 * @param AssetPath      Target BT asset, e.g. "/Game/AI/BT_Sentinel".
 	 *                       The blackboard is created next to it as "<AssetPath>_BB".
 	 * @param BlackboardJson {"keys":[{"name":"HomeLocation","type":"Vector"}]}.
@@ -55,6 +59,10 @@ public:
 	 * Any "type" may instead be a class path (/Game/Folder/Asset.Asset_C or
 	 * /Script/Module.Class); base class, abstract flag and blackboard keys are
 	 * validated, and asset references are loaded and type-checked.
+	 * Key dataflow analysis runs on every build: unwired gate keys fail as dead
+	 * gates unless declared in the optional "externalKeys"; scope/abort/orphan
+	 * findings and unknown blueprint-node effects are reported in "dataflow"
+	 * (declare via the optional "nodeEffects").
 	 *
 	 * @param AssetPath Existing BT asset created by CreateBehaviorTreeAsset.
 	 * @param TreeJson   Root node object as above.

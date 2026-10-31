@@ -53,6 +53,11 @@ TEMPLATE_MAP = "/Engine/Maps/Templates/Template_Default"
 RESULT_FILE = "C:/UEProject/LyraStarterGame/Saved/BTForgeVerify/last_result.json"
 
 
+import sys as _sys
+if "--port" in _sys.argv:
+    BASE = f"http://127.0.0.1:{_sys.argv[_sys.argv.index('--port') + 1]}/mcp"
+
+
 def rpc(method, params, timeout=15):
     NEXT_ID[0] += 1
     payload = {"jsonrpc": "2.0", "id": NEXT_ID[0], "method": method}
@@ -319,7 +324,8 @@ def main():
     asset = "/Game/AI/BT_M6R_" + stamp
     call_tool("create_behavior_tree_asset", {"AssetPath": asset, "BlackboardJson": json.dumps(bb_keys)})
     relay_tree = {"type": "Sequence", "name": "Root", "children": [
-        {"type": relay_class, "name": "Relay"}, seq_increment()]}
+        {"type": relay_class, "name": "Relay"}, seq_increment()],
+        "externalKeys": {"Seq": "blackboardInit"}}
     built = call_tool("build_behavior_tree", {"AssetPath": asset, "TreeJson": json.dumps(relay_tree)})
     check("m6 recipe tree built", built.get("ok") is True, json.dumps(built)[:300])
     result = run_verify({"assetPath": asset, "blackboardInit": {"Seq": 0}})

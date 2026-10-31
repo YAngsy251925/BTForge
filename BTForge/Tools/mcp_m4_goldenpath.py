@@ -56,6 +56,11 @@ TEMPLATE_MAP = "/Engine/Maps/Templates/Template_Default"
 RESULT_FILE = "C:/UEProject/LyraStarterGame/Saved/BTForgeVerify/last_result.json"
 
 
+import sys as _sys
+if "--port" in _sys.argv:
+    BASE = f"http://127.0.0.1:{_sys.argv[_sys.argv.index('--port') + 1]}/mcp"
+
+
 def rpc(method, params, timeout=15):
     NEXT_ID[0] += 1
     payload = {"jsonrpc": "2.0", "id": NEXT_ID[0], "method": method}

@@ -68,6 +68,11 @@ M5_CLASSES = {
 }
 
 
+import sys as _sys
+if "--port" in _sys.argv:
+    BASE = f"http://127.0.0.1:{_sys.argv[_sys.argv.index('--port') + 1]}/mcp"
+
+
 def rpc(method, params, timeout=15):
     NEXT_ID[0] += 1
     payload = {"jsonrpc": "2.0", "id": NEXT_ID[0], "method": method}
@@ -322,7 +327,8 @@ def main():
                             "name": "SetEcho",
                             "params": {"BlackboardKey": "Echo", "Value": {"Key": "Result"}}})
     s1_children.append({"type": "Wait", "params": {"WaitTime": 0.3}})
-    s1_tree = {"type": "Sequence", "name": "Root", "children": s1_children}
+    s1_tree = {"type": "Sequence", "name": "Root", "children": s1_children,
+               "externalKeys": {"A": "blackboardInit"}}
     dry = call_tool("validate_behavior_tree", {"TreeJson": json.dumps(s1_tree),
                                                "BlackboardJson": json.dumps(blackboard)})
     check("m5 dry-run S1 (alias ComputeValue/Log + engine Set-key)",
@@ -356,10 +362,67 @@ def main():
             "SourceKey": "SelfPt", "TargetKey": "FarPt", "MinDistance": 100, "MaxDistance": 1000}}]),
         mark_seq(6),
     ]}
+    s4_dry_tree["externalKeys"] = {"SelfPt": "blackboardInit", "FarPt": "blackboardInit"}
     dry = call_tool("validate_behavior_tree", {"TreeJson": json.dumps(s4_dry_tree),
                                                "BlackboardJson": json.dumps(blackboard)})
     check("m5 dry-run S4 (service on composite, decorator on child)",
           dry.get("ok") is True, json.dumps(dry)[:400])
+
+    # ---------------------------------------------------------------- 2b. key dataflow analysis
+    df_bb = {"keys": [{"name": "Gate", "type": "Float"}, {"name": "Orphan", "type": "Int"}]}
+    dead_tree = {"type": "Selector", "children": [
+        {"type": "Sequence", "decorators": [{"type": "FloatCompare", "params": {
+            "BlackboardKey": "Gate", "Operator": "Less", "CompareToValue": 10}}],
+         "children": [{"type": "Wait", "params": {"WaitTime": 0.2}}]}]}
+    r = call_tool("validate_behavior_tree", {"TreeJson": json.dumps(dead_tree),
+                                             "BlackboardJson": json.dumps(df_bb)})
+    df = r.get("dataflow") or {}
+    check("m5 dataflow dead gate fails validation", r.get("ok") is False and "dead gate" in str(r.get("error", "")),
+          json.dumps(r)[:300])
+    check("m5 dataflow dead gate listed with path", len(df.get("deadGates") or []) == 1
+          and "Gate" in json.dumps(df.get("deadGates")), json.dumps(df.get("deadGates"))[:200])
+
+    exempt_tree = json.loads(json.dumps(dead_tree))
+    exempt_tree["externalKeys"] = {"Gate": "written by the spawner before RunBehaviorTree"}
+    r = call_tool("validate_behavior_tree", {"TreeJson": json.dumps(exempt_tree),
+                                             "BlackboardJson": json.dumps(df_bb)})
+    df = r.get("dataflow") or {}
+    gate_report = next((k for k in (df.get("keys") or []) if k.get("name") == "Gate"), {})
+    check("m5 dataflow externalKeys exempts the gate", r.get("ok") is True and gate_report.get("external") is True,
+          json.dumps(r)[:300])
+
+    orphan_tree = {"type": "Sequence", "services": [{"type": "SetValue", "params": {
+        "KeyToSet": "Orphan", "Constant": 3, "Interval": 0.5}}],
+        "children": [{"type": "Wait", "params": {"WaitTime": 0.2}}]}
+    r = call_tool("validate_behavior_tree", {"TreeJson": json.dumps(orphan_tree),
+                                             "BlackboardJson": json.dumps(df_bb)})
+    df = r.get("dataflow") or {}
+    check("m5 dataflow orphan writer is a warning, build still ok",
+          r.get("ok") is True and len(df.get("orphanWriters") or []) == 1,
+          json.dumps(df.get("orphanWriters"))[:200])
+
+    scope_tree = {"type": "Selector", "children": [
+        {"type": "Sequence", "decorators": [{"type": "FloatCompare", "params": {
+            "BlackboardKey": "Orphan", "Operator": "Less", "CompareToValue": 10}}],
+         "children": [{"type": "Wait", "params": {"WaitTime": 0.2}}]},
+        {"type": "Sequence", "services": [{"type": "SetValue", "params": {
+            "KeyToSet": "Orphan", "Constant": 3, "Interval": 0.1}}],
+         "children": [{"type": "Wait", "params": {"WaitTime": 0.2}}]},
+    ]}
+    r = call_tool("validate_behavior_tree", {"TreeJson": json.dumps(scope_tree),
+                                             "BlackboardJson": json.dumps(df_bb)})
+    df = r.get("dataflow") or {}
+    check("m5 dataflow sibling-branch writer raises scope warning",
+          r.get("ok") is True and len(df.get("scopeWarnings") or []) >= 1,
+          json.dumps(df.get("scopeWarnings"))[:300])
+
+    # inspect readback: bound key names are visible again
+    insp_tree = {"type": "Sequence", "children": [
+        {"type": "ComputeValue", "params": {"LeftKey": "Gate", "Operation": "Add",
+                                            "RightConstant": 1, "ResultKey": "Orphan"}}]}
+    r = call_tool("validate_behavior_tree", {"TreeJson": json.dumps(insp_tree),
+                                             "BlackboardJson": json.dumps(df_bb)})
+    # (inspect readback is asserted on a real asset below, after S1 builds)
 
     # ---------------------------------------------------------------- 3. PIE runs
     def create_and_build(tag, tree):
@@ -382,13 +445,19 @@ def main():
     if has_engine_setkey:
         s1_board["Echo"] = 50
     assert_run("m5 S1", result, board_expect=s1_board)
+    # selector readback (re-enabled in P1): inspect shows the bound key names
+    insp = call_tool("inspect_behavior_tree", {"AssetPath": asset})
+    insp_params = json.dumps(insp)
+    check("m5 inspect readback shows bound key names",
+          '"LeftKey": "A"' in insp_params and '"ResultKey": "Result"' in insp_params,
+          insp_params[:300])
 
     # S2: FloatCompare (Result >= 50) picks the first branch.
     s2_tree = {"type": "Selector", "name": "Root", "children": [
         mark_seq(1, decorators=[{"type": "FloatCompare", "params": {
             "BlackboardKey": "Result", "Operator": "GreaterOrEqual", "CompareToValue": 50}}]),
         mark_seq(2),
-    ]}
+    ], "externalKeys": {"Result": "blackboardInit"}}
     asset = create_and_build(2, s2_tree)
     result = run_verify({"assetPath": asset, "blackboardInit": {"Result": 50}})
     assert_run("m5 S2", result, board_expect={"Mark": 1})
@@ -412,6 +481,7 @@ def main():
             wait=1.0),
         mark_seq(6),
     ]}
+    s4_tree["externalKeys"] = {"SelfPt": "blackboardInit", "FarPt": "blackboardInit"}
     asset = create_and_build(4, s4_tree)
     result = run_verify({"assetPath": asset,
                          "blackboardInit": {"SelfPt": [0, 0, 100], "FarPt": [600, 0, 100]},
@@ -424,6 +494,7 @@ def main():
             "BlackboardKey": "Dist", "Operator": "Less", "CompareToValue": 100}}]),
         mark_seq(8),
     ]}
+    s5_tree["externalKeys"] = {"Dist": "blackboardInit"}
     asset = create_and_build(5, s5_tree)
     result = run_verify({"assetPath": asset,
                          "blackboardInit": {"Dist": 600,
