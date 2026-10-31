@@ -87,6 +87,22 @@ namespace
 		return Found ? *Found : nullptr;
 	}
 
+	/** Resolve a class from a short name ("LyraCharacter") or a full object path
+	 *  ("/Script/LyraGame.LyraCharacter", "/Game/.../BP_X.BP_X_C"). Deterministic:
+	 *  fails (nullptr) when nothing by that name is loaded/loadable. */
+	UClass* ResolveClassLoose(const FString& Text)
+	{
+		if (Text.IsEmpty())
+		{
+			return nullptr;
+		}
+		if (Text.Contains(TEXT("/")))
+		{
+			return StaticLoadClass(UObject::StaticClass(), nullptr, *Text);
+		}
+		return FindFirstObject<UClass>(*Text);
+	}
+
 	/** Resolve a "/path/Asset.Asset_C" class reference (engine or blueprint) for a
 	 *  BT node slot. Blueprint classes are how projects carry their own node
 	 *  types (e.g. Lyra's BTS_Shoot_C); params still flow through the generic
@@ -1369,7 +1385,7 @@ namespace
 	 *  UEnvQueryItemType::StoreInBlackboard) fails silently and the task reports a
 	 *  failed result even though the query produced items. Walks nested structs so
 	 *  FEQSParametrizedQueryExecutionRequest's inner selectors are covered too. */
-	void FixupKeySelectorsInStruct(UStruct* Struct, void* Data, const UBlackboardData* BlackboardAsset, int32 Depth)
+	void FixupKeySelectorsInStruct(UStruct* Struct, void* Data, const UBlackboardData* BlackboardAsset, int32 Depth, UObject* Owner)
 	{
 		if (Struct == nullptr || Data == nullptr || BlackboardAsset == nullptr || Depth > 4)
 		{
@@ -1401,6 +1417,22 @@ namespace
 					{
 						IdProperty->SetIntPropertyValue(IdProperty->ContainerPtrToValuePtr<void>(Data), static_cast<int64>(static_cast<int32>(KeyId)));
 					}
+					// UBTNode::PreSave validates every bound selector against its
+					// AllowedTypes filters and RESETS bindings the filters reject
+					// ("first matching key" or none) - the RunEQS service's
+					// constructor filter Object(AActor) rejects a generic Object key
+					// (BaseClass=UObject), which silently rewrote TargetEnemy to
+					// SelfActor at save time. Mirror the editor's selector details:
+					// rebuild the filters from the bound entry's key type.
+					if (Struct->IsChildOf(FBlackboardKeySelector::StaticStruct()) && Entry->KeyType != nullptr && Owner != nullptr)
+					{
+						FBlackboardKeySelector* Selector = static_cast<FBlackboardKeySelector*>(Data);
+						Selector->AllowedTypes.Reset();
+						if (UBlackboardKeyType* FilterCopy = DuplicateObject(Entry->KeyType, Owner))
+						{
+							Selector->AllowedTypes.Add(FilterCopy);
+						}
+					}
 				}
 			}
 			return;
@@ -1409,7 +1441,7 @@ namespace
 		{
 			if (const FStructProperty* InnerStruct = CastField<FStructProperty>(*It))
 			{
-				FixupKeySelectorsInStruct(InnerStruct->Struct, InnerStruct->ContainerPtrToValuePtr<void>(Data), BlackboardAsset, Depth + 1);
+				FixupKeySelectorsInStruct(InnerStruct->Struct, InnerStruct->ContainerPtrToValuePtr<void>(Data), BlackboardAsset, Depth + 1, Owner);
 			}
 		}
 	}
@@ -1424,7 +1456,7 @@ namespace
 		{
 			if (const FStructProperty* StructProperty = CastField<FStructProperty>(*It))
 			{
-				FixupKeySelectorsInStruct(StructProperty->Struct, StructProperty->ContainerPtrToValuePtr<void>(Node), BlackboardAsset, 0);
+				FixupKeySelectorsInStruct(StructProperty->Struct, StructProperty->ContainerPtrToValuePtr<void>(Node), BlackboardAsset, 0, Node);
 			}
 		}
 	}
@@ -1788,6 +1820,8 @@ FString UBTForgeLibrary::CreateBehaviorTreeAsset(const FString& AssetPath, const
 	{
 		FString Name;
 		FString Type;
+		FString Base;
+		UClass* ResolvedBase = nullptr;
 	};
 	TArray<FKeySpec> ValidatedKeys;
 	TSet<FName> SeenNames;
@@ -1811,6 +1845,28 @@ FString UBTForgeLibrary::CreateBehaviorTreeAsset(const FString& AssetPath, const
 		{
 			return MakeErrorJson(FString::Printf(TEXT("keys[%d] ('%s'): unknown type '%s'. Allowed: Bool, Int, Float, String, Name, Vector, Rotator, Object"),
 				KeyIndex, *Spec.Name, *Spec.Type));
+		}
+		// Optional base-class declaration for Object keys ("base": "LyraCharacter"
+		// or a full object path). UBlackboardKeyType_Object::BaseClass defaults to
+		// UObject, which the editor's PreSave filter check rejects for node
+		// constructors that only accept Actor-derived keys (the RunEQS service's
+		// Object(AActor) filter rewrote TargetEnemy to SelfActor at save time).
+		// A declared base makes the binding survive and narrows the semantics.
+		(*KeyObject)->TryGetStringField(TEXT("base"), Spec.Base);
+		Spec.Base.TrimStartAndEndInline();
+		if (!Spec.Base.IsEmpty())
+		{
+			if (Spec.Type != TEXT("Object"))
+			{
+				return MakeErrorJson(FString::Printf(TEXT("keys[%d] ('%s'): 'base' is only supported for Object keys (this key is %s)"),
+					KeyIndex, *Spec.Name, *Spec.Type));
+			}
+			Spec.ResolvedBase = ResolveClassLoose(Spec.Base);
+			if (Spec.ResolvedBase == nullptr)
+			{
+				return MakeErrorJson(FString::Printf(TEXT("keys[%d] ('%s'): base: could not load class '%s'. Use a short class name or a full object path like /Script/Module.ClassName"),
+					KeyIndex, *Spec.Name, *Spec.Base));
+			}
 		}
 		const FName KeyFName(*Spec.Name);
 		if (ExistingKeys.Contains(KeyFName))
@@ -1846,6 +1902,13 @@ FString UBTForgeLibrary::CreateBehaviorTreeAsset(const FString& AssetPath, const
 		FBlackboardEntry& Entry = Blackboard->Keys.AddDefaulted_GetRef();
 		Entry.EntryName = FName(*Spec.Name);
 		Entry.KeyType = NewObject<UBlackboardKeyType>(Blackboard, ResolveBlackboardKeyType(Spec.Type));
+		if (Spec.ResolvedBase != nullptr)
+		{
+			if (UBlackboardKeyType_Object* ObjectKey = Cast<UBlackboardKeyType_Object>(Entry.KeyType))
+			{
+				ObjectKey->BaseClass = Spec.ResolvedBase;
+			}
+		}
 	}
 	Blackboard->UpdateKeyIDs();
 
@@ -1965,6 +2028,15 @@ FString UBTForgeLibrary::BuildBehaviorTree(const FString& AssetPath, const FStri
 	Tree->BTGraph = nullptr;
 #endif
 	InitializeNodesRecursive(NewRoot, Tree);
+	if (NewRoot->Services.Num() > 0 && NewRoot->Services[0])
+	{
+		FName DbgKey;
+		FProperty* DbgProp = NewRoot->Services[0]->GetClass()->FindPropertyByName(TEXT("BlackboardKey"));
+		if (DbgProp && ReadSelectorKeyName(DbgProp, DbgProp->ContainerPtrToValuePtr<void>(NewRoot->Services[0]), DbgKey))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[BTForge diag] post-init root.services[0] BlackboardKey = '%s'"), *DbgKey.ToString());
+		}
+	}
 	if (UEditorAssetSubsystem* AssetSubsystem = GEditor ? GEditor->GetEditorSubsystem<UEditorAssetSubsystem>() : nullptr)
 	{
 		if (!AssetSubsystem->SaveLoadedAsset(Tree, false))
@@ -1975,6 +2047,36 @@ FString UBTForgeLibrary::BuildBehaviorTree(const FString& AssetPath, const FStri
 	// else: tree built in memory; next editor save will persist it.
 
 	return ResultJson;
+}
+
+FString UBTForgeLibrary::RepairEditorGraph(const FString& AssetPath)
+{
+	UBehaviorTree* Tree = LoadObject<UBehaviorTree>(nullptr, *AssetPath);
+	if (Tree == nullptr)
+	{
+		return MakeErrorJson(TEXT("BehaviorTree asset not found: ") + AssetPath);
+	}
+#if WITH_EDITORONLY_DATA
+	const bool bHadGraph = Tree->BTGraph != nullptr;
+	Tree->BTGraph = nullptr;
+#else
+	const bool bHadGraph = false;
+#endif
+	UEditorAssetSubsystem* AssetSubsystem = GEditor ? GEditor->GetEditorSubsystem<UEditorAssetSubsystem>() : nullptr;
+	if (AssetSubsystem == nullptr)
+	{
+		return MakeErrorJson(TEXT("EditorAssetSubsystem unavailable; graph cleared in memory but not saved: ") + AssetPath);
+	}
+	Tree->MarkPackageDirty();
+	if (!AssetSubsystem->SaveLoadedAsset(Tree, false))
+	{
+		return MakeErrorJson(TEXT("could not save the repaired asset: ") + AssetPath);
+	}
+	TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("ok"), true);
+	Result->SetStringField(TEXT("asset"), AssetPath);
+	Result->SetBoolField(TEXT("graphCleared"), bHadGraph);
+	return JsonToString(Result);
 }
 
 FString UBTForgeLibrary::InspectBehaviorTree(const FString& AssetPath)
@@ -1996,6 +2098,10 @@ FString UBTForgeLibrary::InspectBehaviorTree(const FString& AssetPath)
 			TSharedRef<FJsonObject> KeyObject = MakeShared<FJsonObject>();
 			KeyObject->SetStringField(TEXT("name"), Entry.EntryName.ToString());
 			KeyObject->SetStringField(TEXT("type"), Entry.KeyType ? Entry.KeyType->GetClass()->GetName() : TEXT("(none)"));
+			if (const UBlackboardKeyType_Object* ObjectKey = Cast<UBlackboardKeyType_Object>(Entry.KeyType))
+			{
+				KeyObject->SetStringField(TEXT("base"), ObjectKey->BaseClass ? ObjectKey->BaseClass->GetPathName() : TEXT("(any)"));
+			}
 			Keys.Add(MakeShared<FJsonValueObject>(KeyObject));
 		}
 		Result->SetArrayField(TEXT("blackboardKeys"), Keys);
@@ -2069,6 +2175,24 @@ FString UBTForgeLibrary::ValidateBehaviorTree(const FString& TreeJson, const FSt
 			return MakeErrorJson(FString::Printf(TEXT("keys[%d] ('%s'): unknown type '%s'. Allowed: Bool, Int, Float, String, Name, Vector, Rotator, Object"),
 				KeyIndex, *KeyName, *KeyType));
 		}
+		FString KeyBase;
+		(*KeyObject)->TryGetStringField(TEXT("base"), KeyBase);
+		KeyBase.TrimStartAndEndInline();
+		UClass* ResolvedBase = nullptr;
+		if (!KeyBase.IsEmpty())
+		{
+			if (KeyType != TEXT("Object"))
+			{
+				return MakeErrorJson(FString::Printf(TEXT("keys[%d] ('%s'): 'base' is only supported for Object keys (this key is %s)"),
+					KeyIndex, *KeyName, *KeyType));
+			}
+			ResolvedBase = ResolveClassLoose(KeyBase);
+			if (ResolvedBase == nullptr)
+			{
+				return MakeErrorJson(FString::Printf(TEXT("keys[%d] ('%s'): base: could not load class '%s'. Use a short class name or a full object path like /Script/Module.ClassName"),
+					KeyIndex, *KeyName, *KeyBase));
+			}
+		}
 		const FName KeyFName(*KeyName);
 		if (ExistingKeys.Contains(KeyFName))
 		{
@@ -2082,6 +2206,13 @@ FString UBTForgeLibrary::ValidateBehaviorTree(const FString& TreeJson, const FSt
 		FBlackboardEntry& Entry = Blackboard->Keys.AddDefaulted_GetRef();
 		Entry.EntryName = FName(*KeyName);
 		Entry.KeyType = NewObject<UBlackboardKeyType>(Blackboard, ResolveBlackboardKeyType(KeyType));
+		if (ResolvedBase != nullptr)
+		{
+			if (UBlackboardKeyType_Object* ObjectKey = Cast<UBlackboardKeyType_Object>(Entry.KeyType))
+			{
+				ObjectKey->BaseClass = ResolvedBase;
+			}
+		}
 	}
 	Blackboard->UpdateKeyIDs();
 
