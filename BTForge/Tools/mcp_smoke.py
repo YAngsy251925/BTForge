@@ -27,11 +27,13 @@ FLAT_TOOLS = {
     "create": "create_behavior_tree_asset",
     "build": "build_behavior_tree",
     "inspect": "inspect_behavior_tree",
+    "validate": "validate_behavior_tree",
 }
 OFFICIAL_TOOLS = {
     "create": "BTForgeOfficial.BTForgeToolset.CreateBehaviorTreeAsset",
     "build": "BTForgeOfficial.BTForgeToolset.BuildBehaviorTree",
     "inspect": "BTForgeOfficial.BTForgeToolset.InspectBehaviorTree",
+    "validate": "BTForgeOfficial.BTForgeToolset.ValidateBehaviorTree",
 }
 
 TREE = {
@@ -76,7 +78,9 @@ TREE_L2 = {
         {"type": "Wait", "name": "Idle", "params": {"WaitTime": 1.0}},
     ],
 }
-BLACKBOARD_L2 = {"keys": [{"name": "MoveGoal", "type": "Vector"}]}
+# EQS_FindTarget yields Actor items, so its result key must be an Object key
+# (a Vector key would fail StoreInBlackboard at runtime - the builder rejects it).
+BLACKBOARD_L2 = {"keys": [{"name": "MoveGoal", "type": "Object"}]}
 
 FAILURES = []
 
@@ -252,6 +256,31 @@ def main():
           and waits[0].get("params", {}).get("RandomDeviation") == 1.0
           and waits[1].get("params", {}).get("WaitTime") == 4.0)
 
+    # --- key dataflow: a gate on a key nobody writes must be rejected --------
+    gated = {"type": "Selector", "name": "Root", "children": [
+        {"type": "MoveTo", "name": "Go", "params": {"BlackboardKey": "RoutePoint"},
+         "decorators": [{"type": "DistanceCheck", "params": {
+             "SourceKey": "SelfActor", "TargetKey": "PostLocation", "MinDistance": 100.0}}]},
+        {"type": "Wait", "params": {"WaitTime": 0.1}}]}
+    gated_bb = {"keys": [{"name": "RoutePoint", "type": "Vector"},
+                         {"name": "PostLocation", "type": "Vector"}]}
+    _, text = client.call_tool(tools["validate"], {"TreeJson": json.dumps(gated),
+                                                   "BlackboardJson": json.dumps(gated_bb)})
+    dead = parse_tool_result(text)
+    check("dataflow: dead gate blocks validate",
+          dead.get("ok") is False and "dead gate" in str(dead.get("error", "")), text)
+
+    # ...and externalKeys (declared on the tree root) makes it legitimately pass
+    gated_declared = dict(gated)
+    gated_declared["externalKeys"] = {"PostLocation": "spawner writes the guard post",
+                                      "RoutePoint": "patrol route authored in the level"}
+    _, text = client.call_tool(tools["validate"], {"TreeJson": json.dumps(gated_declared),
+                                                   "BlackboardJson": json.dumps(gated_bb)})
+    declared = parse_tool_result(text)
+    external_keys = [k for k in (declared.get("dataflow") or {}).get("keys", []) if k.get("external")]
+    check("dataflow: externalKeys exempts the gate",
+          declared.get("ok") is True and any(k["name"] == "PostLocation" for k in external_keys), text)
+
     if FAILURES:
         print(f"\nRESULT: FAIL ({len(FAILURES)} checks failed: {FAILURES})", flush=True)
         sys.exit(4)
@@ -267,8 +296,7 @@ def main():
 def run_l2(client, tools):
     """L2 write path: RunEQS (asset ref + enum + result key) -> MoveTo (key goal),
     plus negative cases proving the validation contract."""
-    # Timestamped on purpose: a fixed name makes the second run of this suite fail
-    # with "already exists" on a machine where the first run's assets were kept.
+    # Timestamped: a fixed name collides with assets left by earlier runs.
     asset = "/Game/AI/BT_Smoke_L2_" + time.strftime("%H%M%S")
     print(f"\n=== L2: create {asset} (MoveGoal blackboard) ===", flush=True)
     _, text = client.call_tool(tools["create"], {"AssetPath": asset, "BlackboardJson": json.dumps(BLACKBOARD_L2)})
@@ -293,6 +321,12 @@ def run_l2(client, tools):
     if len(patrol_children) > 1:
         check("L2 MoveTo AcceptableRadius == 50",
               patrol_children[1].get("params", {}).get("AcceptableRadius") == 50, text)
+        # inspect reports key bindings per node (name + type), not just scalars.
+        # NOTE: read the writer node here; the MoveTo goal selector is reported by
+        # dataflow but dumps empty on 5.8 (under investigation, 5.5 dumps it fine).
+        runeqs_key = (patrol_children[0].get("keys") or {}).get("BlackboardKey") or {}
+        check("L2 inspect reports a key binding",
+              runeqs_key.get("name") == "MoveGoal" and "BlackboardKeyType" in str(runeqs_key.get("type", "")), text)
 
     # Negative cases: the validation contract must reject, not corrupt.
     _, text = client.call_tool(tools["build"], {"AssetPath": asset, "TreeJson": json.dumps(

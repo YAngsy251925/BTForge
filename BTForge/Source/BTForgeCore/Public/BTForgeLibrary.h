@@ -48,6 +48,10 @@ public:
 	 * root); fill it with BuildBehaviorTree. Fails if either asset already
 	 * exists; nothing is overwritten.
 	 *
+	 * Every blackboard already carries the engine's SelfActor key (added by
+	 * UBlackboardData::PostInitProperties): do not declare it in the spec -
+	 * that is rejected - but nodes can reference it normally.
+	 *
 	 * @param AssetPath      Target BT asset, e.g. "/Game/AI/BT_Sentinel".
 	 *                       The blackboard is created next to it as "<AssetPath>_BB".
 	 * @param BlackboardJson {"keys":[{"name":"HomeLocation","type":"Vector"}]}.
@@ -107,6 +111,22 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "BTForge")
 	static FString InspectBehaviorTree(const FString& AssetPath);
+
+	/**
+	 * Drop the asset's editor graph (UBehaviorTree::BTGraph) and save it.
+	 *
+	 * The graph is only a view over the data chain, but the editor serializes it:
+	 * after the tree is rebuilt by this tool the old graph keeps pointing at node
+	 * instances that no longer exist, and the editor shows every node as
+	 * "class not found" while the tree still runs. Building clears the graph
+	 * automatically; this entry point repairs assets that were rebuilt before
+	 * that fix (or edited around it).
+	 *
+	 * @param AssetPath Existing BT asset path.
+	 * @return JSON {"ok":true,"asset":path,"graphCleared":bool} or {"ok":false,"error":msg}
+	 */
+	UFUNCTION(BlueprintCallable, Category = "BTForge")
+	static FString RepairEditorGraph(const FString& AssetPath);
 
 	/**
 	 * Apply spec-style params ({name: value, ...}) to any object through the

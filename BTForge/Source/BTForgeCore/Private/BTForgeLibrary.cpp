@@ -31,6 +31,7 @@
 #include "Dom/JsonObject.h"
 #include "Editor.h"
 #include "Serialization/JsonSerializer.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 #include "Subsystems/EditorAssetSubsystem.h"
 #include "UObject/UnrealType.h"
 
@@ -2056,6 +2057,19 @@ FString UBTForgeLibrary::RepairEditorGraph(const FString& AssetPath)
 	{
 		return MakeErrorJson(TEXT("BehaviorTree asset not found: ") + AssetPath);
 	}
+	// An open graph editor holds the old graph in memory and would write it back
+	// over this repair on its next save (the "graph wins" rule): refuse instead
+	// of racing it. Checked before any mutation so a refusal leaves the asset as-is.
+	if (GEditor != nullptr)
+	{
+		if (UAssetEditorSubsystem* AssetEditors = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>())
+		{
+			if (AssetEditors->FindEditorForAsset(Tree, /*bFocusIfOpen=*/false) != nullptr)
+			{
+				return MakeErrorJson(TEXT("asset is open in an editor; close its tab first - an open graph would overwrite this repair on save"));
+			}
+		}
+	}
 #if WITH_EDITORONLY_DATA
 	const bool bHadGraph = Tree->BTGraph != nullptr;
 	Tree->BTGraph = nullptr;
@@ -2076,6 +2090,7 @@ FString UBTForgeLibrary::RepairEditorGraph(const FString& AssetPath)
 	Result->SetBoolField(TEXT("ok"), true);
 	Result->SetStringField(TEXT("asset"), AssetPath);
 	Result->SetBoolField(TEXT("graphCleared"), bHadGraph);
+	Result->SetStringField(TEXT("note"), TEXT("stale editor graph dropped; the Behavior Tree editor rebuilds the graph from the data chain on next open"));
 	return JsonToString(Result);
 }
 

@@ -119,18 +119,18 @@ namespace
 			},
 			{
 				TEXT("build_behavior_tree"),
-				TEXT("Build (or rebuild) the tree of an existing BT asset from a JSON spec. Replaces the whole root; the previous tree is discarded on success; a failed build leaves the saved asset untouched. Root must be Sequence/Selector; composites need a non-empty children array; tasks take no children; unknown types or params are rejected with a JSON path. Do not call while PIE is running. Node types: Sequence, Selector, Wait (WaitTime/RandomDeviation), MoveTo (BlackboardKey=goal key name, AcceptableRadius), RunEQS (BlackboardKey=result key, EQSRequest={QueryTemplate: EQS asset path, RunMode, QueryConfig:[{ParamName,Value,BBKey}]}; binding a key sets bUseBBKey automatically, and every option's item type is checked against the key type at build time). Composite nodes accept \"services\":[{type,params}] (RunEQS service: same EQSRequest shape) ticking while the branch runs; any child accepts \"decorators\":[{type,params}] gating entry - Blackboard decorator (BlackboardKey, KeyQueryType, FlowAbortMode, NotifyObserver); multiple decorators combine as AND. Any 'type' may instead be a class path like /Game/Folder/Asset.Asset_C or /Script/Module.Class to instantiate project-defined blueprint/native node classes (base-class validated: composites/tasks, UBTService, UBTDecorator; abstract classes rejected). Blackboard key names are validated against the tree's blackboard; asset paths are loaded and type-checked. Key dataflow analysis runs on every build: keys read but never written fail the build as dead gates unless declared in the optional top-level \"externalKeys\": {name: reason}; writers mounted outside a reader's branch, unwired FlowAbortMode and orphan writers are reported in the \"dataflow\" section; unregistered blueprint node classes are listed in dataflow.unknownEffects and can declare their key effects via the optional \"nodeEffects\": {ClassName: {\"writes\":[...],\"reads\":[...]}}."),
+				TEXT("Build (or rebuild) the tree of an existing BT asset from a JSON spec. Replaces the whole root; the previous tree is discarded on success; a failed build leaves the saved asset untouched. Root must be Sequence/Selector; composites need a non-empty children array; tasks take no children; unknown types or params are rejected with a JSON path. Do not call while PIE is running. Node types: Sequence, Selector, Wait (WaitTime/RandomDeviation), MoveTo (BlackboardKey=goal key name, AcceptableRadius), RunEQS (BlackboardKey=result key, EQSRequest={QueryTemplate: EQS asset path, RunMode, QueryConfig:[{ParamName,Value,BBKey}]}; binding a key sets bUseBBKey automatically, and every option's item type is checked against the key type at build time). Composite nodes accept \"services\":[{type,params}] (RunEQS service: same EQSRequest shape) ticking while the branch runs; any child accepts \"decorators\":[{type,params}] gating entry - Blackboard decorator (BlackboardKey, KeyQueryType, FlowAbortMode, NotifyObserver); multiple decorators combine as AND. Any 'type' may instead be a class path like /Game/Folder/Asset.Asset_C or /Script/Module.Class to instantiate project-defined blueprint/native node classes (base-class validated: composites/tasks, UBTService, UBTDecorator; abstract classes rejected). Blackboard key names are validated against the tree's blackboard; asset paths are loaded and type-checked. Key dataflow analysis runs on every build: keys read but never written fail the build as dead gates unless declared in the optional top-level \"externalKeys\": {name: reason}; writers mounted outside a reader's branch, unwired FlowAbortMode and orphan writers are reported in the \"dataflow\" section; unregistered blueprint node classes are listed in dataflow.unknownEffects and can declare their key effects via the optional \"nodeEffects\": {ClassName: {\"writes\":[...],\"reads\":[...]}}. If the asset may be opened in the Behavior Tree editor later, follow up with repair_graph so the editor rebuilds its graph view from the new data instead of showing stale nodes."),
 				TEXT(R"json({"type":"object","properties":{"AssetPath":{"type":"string","description":"Existing BT asset path created by create_behavior_tree_asset."},"TreeJson":{"type":["object","string"],"description":"Root node object, e.g. {\"type\":\"Selector\",\"name\":\"Root\",\"children\":[{\"type\":\"Sequence\",\"children\":[{\"type\":\"RunEQS\",\"params\":{\"EQSRequest\":{\"QueryTemplate\":\"/ShooterCore/Bot/EQS/EQS_FindTarget.EQS_FindTarget\",\"RunMode\":\"SingleResultPerQuery\",\"QueryConfig\":[{\"ParamName\":\"Distance\",\"BBKey\":\"MoveGoal\"}]}},\"children\":[]},{\"type\":\"MoveTo\",\"params\":{\"BlackboardKey\":\"MoveGoal\",\"AcceptableRadius\":50}}]},{\"type\":\"Wait\",\"params\":{\"WaitTime\":5.0}}]}. A real JSON object is accepted directly."}},"required":["AssetPath","TreeJson"]})json")
 			},
 			{
 				TEXT("inspect_behavior_tree"),
-				TEXT("Read a BT asset back as JSON: blackboard keys plus the full node tree with each node's class, name and scalar property values. Use to verify a build or inspect an existing tree before extending it."),
+				TEXT("Read a BT asset back as JSON: blackboard keys plus the full node tree with each node's class, name, scalar property values and its blackboard key bindings (keys: {property:{name,type}}). Use to verify a build or inspect an existing tree before extending it."),
 				TEXT(R"json({"type":"object","properties":{"AssetPath":{"type":"string","description":"Existing BT asset path."}},"required":["AssetPath"]})json")
 			},
 			{
 				TEXT("validate_behavior_tree"),
-				TEXT("Validate a Behavior Tree spec and blackboard spec WITHOUT creating or modifying any asset. Builds everything into transient objects (node classes, parameters, services, decorators, blackboard keys) and returns the first error with its JSON path, plus a \"dataflow\" key analysis: dead gates (keys read but never written - fatal unless declared in the optional TreeJson \"externalKeys\"), orphan writers, writer-scope warnings, FlowAbortMode reminders and unknown-effects blueprint classes (declare via the optional TreeJson \"nodeEffects\"). Use this to iterate on a spec before create/build."),
-				TEXT(R"json({"type":"object","properties":{"TreeJson":{"type":["object","string"],"description":"Root node object, same syntax as build_behavior_tree; optional top-level externalKeys and nodeEffects declarations."},"BlackboardJson":{"type":["object","string"],"description":"Optional blackboard spec {\"keys\":[...]}; defaults to no keys."}},"required":["TreeJson"]})json")
+				TEXT("Validate a Behavior Tree spec and blackboard spec WITHOUT creating or modifying any asset. Builds everything into transient objects (node classes, parameters, services, decorators, blackboard keys) and returns the first error with its JSON path, plus a \"dataflow\" key analysis: dead gates (keys read but never written - fatal unless declared in \"externalKeys\" on the tree root or in BlackboardJson; only conclusive when every node class has known effects), orphan writers, writer-scope warnings, FlowAbortMode reminders and unknown-effects blueprint classes (declare via the optional \"nodeEffects\" map {ClassName:{writes:[props],reads:[props]}}). Use this to iterate on a spec before create/build."),
+				TEXT(R"json({"type":"object","properties":{"TreeJson":{"type":["object","string"],"description":"Root node object, same syntax as build_behavior_tree; optional top-level externalKeys and nodeEffects declarations."},"BlackboardJson":{"type":["object","string"],"description":"Optional blackboard spec {\"keys\":[...], \"externalKeys\":{key:reason}, \"nodeEffects\":{...}}; defaults to no keys."}},"required":["TreeJson"]})json")
 			},
 			{
 				TEXT("create_eqs_asset"),
@@ -171,6 +171,11 @@ namespace
 				TEXT("create_node_blueprint"),
 				TEXT("Blueprint node generation (M6): create a Blueprint node asset - a generated class derived from a BT node base class, with ParamsJson written onto the class CDO through the same reflection writers build_behavior_tree uses, and - with RecipeJson - a constrained event-graph recipe: on the node's main event (tasks ReceiveExecuteAI, services ReceiveActivationAI) call a zero-parameter BlueprintCallable function on the AI controller or its pawn, then finish (tasks). RecipeJson: {\"recipe\":\"call_function\",\"target\":\"controller\"|\"pawn\",\"function\":\"ForceNetUpdate\"}. The returned classPath plugs straight into build_behavior_tree as a node 'type', and the capability catalog lists the new class automatically. Fails if the asset exists; nothing is kept on failure. Blackboard key names in params resolve per-tree when the node is placed."),
 				TEXT(R"json({"type":"object","properties":{"AssetPath":{"type":"string","description":"Target blueprint asset path, e.g. /Game/AI/BTA_LogShot."},"ParentClassPath":{"type":"string","description":"Class path of a non-abstract UBTTaskNode/UBTService/UBTDecorator-derived class, e.g. /Script/BTForgeRuntime.BTForgeTask_LogMessage, /Script/AIModule.BTTask_BlueprintBase, or an existing /Game/..._C. Recipes additionally require the *BlueprintBase class."},"ParamsJson":{"type":["object","string"],"description":"{\"PropertyName\": value, ...} applied to the class defaults, e.g. {\"Message\":\"shot fired\",\"Severity\":\"Warning\"}. Optional (empty = engine defaults)."},"RecipeJson":{"type":["object","string"],"description":"Optional constrained event-graph recipe {\"recipe\":\"call_function\",\"target\":\"controller\"|\"pawn\",\"function\":\"Name\"}; the function must be a zero-parameter BlueprintCallable non-pure instance function of AAIController (controller) or APawn (pawn)."}},"required":["AssetPath","ParentClassPath"]})json")
+			},
+			{
+				TEXT("repair_graph"),
+				TEXT("Drop a BT asset's stale editor graph and save the asset (maintenance only; the runtime data chain is untouched). The editor graph is a view over the data chain: after build_behavior_tree replaces node instances - typically from a headless or cross-process session - the serialized graph still points at the replaced instances and the Behavior Tree editor shows every node as \"class not found\" while the tree itself still runs. repair_graph clears the stale graph so the editor rebuilds it from the data chain on next open. Refuses while the asset is open in an editor: an open graph would win and overwrite the repair on its next save. Call after build_behavior_tree when the asset may be opened in the Behavior Tree editor later; inspect_behavior_tree and runtime execution are unaffected either way."),
+				TEXT(R"json({"type":"object","properties":{"AssetPath":{"type":"string","description":"Existing BT asset path, e.g. /Game/AI/BT_Hunter."}},"required":["AssetPath"]})json")
 			},
 		};
 		return Tools;
@@ -334,6 +339,15 @@ namespace
 				LibraryResult = UBTForgeBlueprintLibrary::CreateNodeBlueprint(AssetPath, ParentClassPath, ParamsJson, RecipeJson);
 			}
 		}
+		else if (ToolName == TEXT("repair_graph"))
+		{
+			// Maintenance: drop the stale editor graph so the Behavior Tree editor
+			// rebuilds it from the data chain on next open. Runtime data untouched.
+			if (bHasAssetPath)
+			{
+				LibraryResult = UBTForgeLibrary::RepairEditorGraph(AssetPath);
+			}
+		}
 		else if (ToolName == TEXT("start_verify") || ToolName == TEXT("get_verify_result"))
 		{
 			// M3 runtime verification. Includes UE 5.5 in the description because
@@ -404,7 +418,7 @@ namespace
 
 		TSharedRef<FJsonObject> ServerInfo = MakeShared<FJsonObject>();
 		ServerInfo->SetStringField(TEXT("name"), TEXT("BTForge"));
-		ServerInfo->SetStringField(TEXT("version"), TEXT("2.6.2"));
+		ServerInfo->SetStringField(TEXT("version"), TEXT("2.7.0"));
 
 		TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
 		Result->SetStringField(TEXT("protocolVersion"), Negotiated);

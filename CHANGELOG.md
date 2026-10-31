@@ -3,6 +3,84 @@
 All notable changes to BT Forge are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.7.0] — 2026-10-31
+
+### Added
+
+- **Key dataflow analysis** (shared by `validate_behavior_tree` and
+  `build_behavior_tree`): every node's `FBlackboardKeySelector` bindings are read
+  through reflection and classified as read/write against a capability table, then
+  reported as a `dataflow` block:
+  - `keys[]` - each key with `writtenBy` / `readBy` paths;
+  - `deadGates[]` - keys read by a decorator or task but never written (fatal when
+    every node's effects are known; reported only when unknown-effects nodes exist);
+  - `orphanWriters[]`, `scopeWarnings[]` (a service only ticks while its own branch
+    is active), `abortWarnings[]` (`FlowAbortMode=None` on a key that changes);
+  - `unknownEffects[]` - unregistered Blueprint classes that carry key selectors.
+- **Spec declarations**: `externalKeys` (`{key: reason}`) marks keys fed from
+  outside the tree (tree root, or BlackboardJson for validate); `nodeEffects`
+  (`{ClassName: {writes:[...], reads:[...]}}`) teaches the analyzer project nodes.
+- **`inspect_behavior_tree` reports key bindings** per node/service/decorator
+  (`"keys": {"BlackboardKey": {"name": "MoveGoal", "type": "BlackboardKeyType_Object"}}`),
+  resolved against the tree's blackboard instead of walking selector internals.
+- **`repair_graph` (13th tool)**: drops a BT asset's stale editor graph and saves
+  the asset so the Behavior Tree editor rebuilds the graph from the data chain on
+  next open. After a `build_behavior_tree` from a headless or cross-process
+  session the serialized graph still points at the replaced node instances and
+  the editor shows every node as "class not found" while the tree itself still
+  runs; this closes the rebuild-then-open loop without a manual console command.
+  Refuses while the asset is open in an editor (an open graph would win and
+  overwrite the repair on its next save); `build_behavior_tree`'s description now
+  cross-references it. Previously editor-console-only (`BTForge.RepairGraph`,
+  which keeps working).
+
+### Fixed
+
+- `validate_behavior_tree` reads `externalKeys` / `nodeEffects` from the blackboard
+  spec as well as from the tree root, so the same declaration works for validate and
+  build.
+- `build_behavior_tree` no longer fails on "dead gates" when the tree contains
+  unregistered Blueprint nodes - their effects are unknown, so the finding is a
+  warning until `nodeEffects` is declared.
+- `Tools/mcp_smoke.py`: L2 uses a MoveTo-compatible Object result key for the actor
+  item query, a timestamped asset name, and covers dead-gate rejection + external
+  declaration + inspect key readback.
+
+## [2.6.2] — 2026-10-31
+
+### Fixed
+
+- **Duplicate blackboard keys**: `UBlackboardData::PostInitProperties` already adds the
+  engine's `SelfActor` key to every new blackboard, and `create_behavior_tree_asset`
+  appended the spec's keys on top without looking at what was there — a spec that
+  declared `SelfActor` produced a second entry with that name. `GetKeyID` resolved to
+  the built-in one, the duplicate showed up in every `inspect_behavior_tree`, and its
+  declared type was silently ignored. Specs that re-declare an existing key are now
+  rejected with an actionable error naming the built-in key, and duplicate detection is
+  case-insensitive (FName), so `selfactor` no longer slips past `SelfActor`.
+- **`validate_behavior_tree` did not know about engine-added keys**: its transient
+  blackboard has `SelfActor`, but the set used to validate node key references was built
+  from the spec only, so a spec that used `SelfActor` was rejected as "unknown
+  blackboard key" while `build_behavior_tree` accepted it. The transient blackboard's
+  keys now seed that set, so validate and build agree.
+
+### Added
+
+- **`blackboardInit` can drive actor-keyed branches**: Object keys accept the
+  runtime-only tokens `$FixturePawn` / `$FixtureController` (an asset path cannot name
+  a PIE-spawned actor), so a test can exercise "TargetEnemy is set" chains instead of
+  only the stateless fallback.
+- **Verify result reports the fixture pawn's path**: `pawnStart` / `pawnEnd` /
+  `pawnStartCaptured` alongside `pawnDisplacement`, so a test can pick a *reachable*
+  goal (spawn + offset) instead of guessing coordinates on a nav-meshed map.
+
+### Docs
+
+- README (EN/ZH), `create_behavior_tree_asset`'s MCP description and both header docs
+  state that `SelfActor` is built in and must not be declared.
+- `Tools/mcp_smoke.py` covers it: "no duplicate blackboard keys", "re-declaring
+  SelfActor is rejected", "validate accepts the built-in SelfActor key".
+
 ## [2.6.1] — 2026-10-31
 
 Correctness and contract pass: seven paths that could wedge a session or report

@@ -55,7 +55,8 @@ The agent stays a **planner and spec author**; the deterministic writer owns ass
 ### Spec coverage
 
 - **BT nodes**: composites `Sequence`/`Selector`; tasks `Wait`, `MoveTo`, `RunEQS`; services `RunEQS`; decorator `Blackboard`. Any non-abstract `UBTCompositeNode` / `UBTTaskNode` / `UBTService` / `UBTDecorator` **class path** is also accepted — including project Blueprint classes such as `/Game/AI/BTS_Shoot.BTS_Shoot_C`.
-- **Blackboard keys**: Bool, Int, Float, String, Name, Vector, Rotator, Object.
+- **Key dataflow** (`validate_behavior_tree` / `build_behavior_tree`): every node's blackboard key bindings are read back and classified; dead gates (keys read but never written), orphan writers, writer-scope and `FlowAbortMode` problems are reported. Declare keys fed from outside the tree via `externalKeys` (tree root or BlackboardJson) and project node effects via `nodeEffects`.
+- **Blackboard keys**: Bool, Int, Float, String, Name, Vector, Rotator, Object. `SelfActor` is created by `UBlackboardData` itself, so do not declare it — a spec that does is rejected (nodes can still reference it).
 - **EQS generators**: `SimpleGrid`, `CurrentLocation`, `OnCircle`, `Donut`, `Cone`, `PathingGrid`, `ActorsOfClass`, `PerceivedActors` (+ any non-abstract `UEnvQueryGenerator` class path).
 - **EQS tests**: `Distance`, `Dot`, `Trace`, `Pathfinding`, `Random`, `Overlap`, `Project`, `Volume` (+ any non-abstract `UEnvQueryTest` class path).
 - **Parameters** are written through Unreal reflection. Unknown parameter names are rejected with the allowed list; enum values are validated with the full value list; class references are loaded and type-checked; `FAIDataProvider*` wrappers accept a bare number for ergonomics.

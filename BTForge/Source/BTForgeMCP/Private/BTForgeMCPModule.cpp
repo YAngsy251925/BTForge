@@ -1,5 +1,7 @@
 #include "BTForgeMcpServer.h"
 
+#include "BTForgeLibrary.h"
+
 #include "HAL/IConsoleManager.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/CoreMisc.h"
@@ -38,6 +40,20 @@ namespace
 		GMcpServer.Start(Port);
 	}
 
+	/** Maintenance: drop a BT asset's stale editor graph and save it.
+	 *  The graph is a view over the data chain; after the tree is rebuilt by
+	 *  build_behavior_tree the old graph points at replaced node instances and the
+	 *  editor shows every node as "class not found" (the tree itself still runs). */
+	void ExecRepairGraph(const TArray<FString>& Args)
+	{
+		if (Args.Num() == 0)
+		{
+			UE_LOG(LogBTForgeMcp, Error, TEXT("usage: BTForge.RepairGraph <assetPath>"));
+			return;
+		}
+		UE_LOG(LogBTForgeMcp, Display, TEXT("repair graph: %s"), *UBTForgeLibrary::RepairEditorGraph(Args[0]));
+	}
+
 	void ExecStopServer(const TArray<FString>& Args)
 	{
 		GMcpServer.Stop();
@@ -65,6 +81,12 @@ public:
 			TEXT("BTForge.MCP.StartServer"),
 			TEXT("Start the BTForge MCP HTTP server. Optional argument: port (default 8090)."),
 			FConsoleCommandWithArgsDelegate::CreateStatic(&ExecStartServer),
+			ECVF_Default);
+
+		RepairGraphCommand = IConsoleManager::Get().RegisterConsoleCommand(
+			TEXT("BTForge.RepairGraph"),
+			TEXT("Clear a BehaviorTree asset's stale editor graph and save it. Argument: asset path."),
+			FConsoleCommandWithArgsDelegate::CreateStatic(&ExecRepairGraph),
 			ECVF_Default);
 
 		StopCommand = IConsoleManager::Get().RegisterConsoleCommand(
@@ -95,6 +117,7 @@ public:
 	{
 		FCoreDelegates::OnPostEngineInit.RemoveAll(this);
 		GMcpServer.Stop();
+		if (RepairGraphCommand) { IConsoleManager::Get().UnregisterConsoleObject(RepairGraphCommand); RepairGraphCommand = nullptr; }
 		if (StartCommand) { IConsoleManager::Get().UnregisterConsoleObject(StartCommand); StartCommand = nullptr; }
 		if (StopCommand) { IConsoleManager::Get().UnregisterConsoleObject(StopCommand); StopCommand = nullptr; }
 		if (StatusCommand) { IConsoleManager::Get().UnregisterConsoleObject(StatusCommand); StatusCommand = nullptr; }
@@ -117,6 +140,7 @@ private:
 		}
 	}
 
+	IConsoleObject* RepairGraphCommand = nullptr;
 	IConsoleObject* StartCommand = nullptr;
 	IConsoleObject* StopCommand = nullptr;
 	IConsoleObject* StatusCommand = nullptr;

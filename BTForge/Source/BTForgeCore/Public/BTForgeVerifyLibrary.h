@@ -25,6 +25,10 @@ public:
 	 *   bt: "mode":"SingleRun"|"Looped", "durationSec":n, "expectedDurationSec":n,
 	 *       "toleranceSec":n, "expectedActiveTask":"BTTask_Wait", "expectedMinPawnDisplacement":n,
 	 *       "blackboardInit":{"Key":value}, "fixturePawn":true|false,
+	 *       (blackboardInit accepts a number/bool/string/[x,y,z] per key type, an
+	 *        object/class path for Object/Class keys, and the runtime-only tokens
+	 *        "$FixturePawn" / "$FixtureController" so actor-gated branches can be
+	 *        exercised without project wiring)
 	 *   eqs: "queryRunMode":"SingleResult", "queryParams":{"Name":n}}
 	 * bareGameMode (default true) overrides PIE's GameMode with a bare AGameModeBase;
 	 * an empty mapPath then defaults to /Engine/Maps/Templates/Template_Default.

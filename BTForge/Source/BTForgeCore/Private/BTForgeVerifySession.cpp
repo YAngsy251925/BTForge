@@ -181,11 +181,20 @@ namespace
 		return false;
 	}
 
+	/** Runtime actors of the current fixture, for the "$FixturePawn"/"$FixtureController"
+	 *  blackboardInit tokens (actor keys cannot be set from an asset path). */
+	struct FBTForgeFixtureActors
+	{
+		UObject* Pawn = nullptr;
+		UObject* Controller = nullptr;
+	};
+
 	/** Type-directed blackboard write: the old code funnelled every value through
 	 *  SetValueAsFloat/Bool/String, which silently no-ops on Int/Enum/Vector/Rotator/
 	 *  Class keys. Every unsupported shape is now an explicit error instead. */
 	bool WriteBlackboardValue(UBlackboardComponent& Blackboard, const FName KeyName,
-		const UBlackboardKeyType* KeyType, const TSharedPtr<FJsonValue>& Value, FString& OutError)
+		const UBlackboardKeyType* KeyType, const TSharedPtr<FJsonValue>& Value,
+		const FBTForgeFixtureActors& FixtureActors, FString& OutError)
 	{
 		if (!Value.IsValid())
 		{
@@ -332,6 +341,29 @@ namespace
 			if (Value->Type == EJson::Null) { Blackboard.SetValueAsObject(KeyName, nullptr); return true; }
 			if (!bIsText) { return Fail(TEXT("an object path string or null")); }
 			if (Text.IsEmpty()) { Blackboard.SetValueAsObject(KeyName, nullptr); return true; }
+			// Fixture actors only exist at runtime, so they cannot be named by an asset
+			// path. These tokens let a test drive actor-keyed branches (e.g. a combat
+			// branch gated on "TargetEnemy is set") without project wiring.
+			if (Text.Equals(TEXT("$FixturePawn"), ESearchCase::IgnoreCase))
+			{
+				if (FixtureActors.Pawn == nullptr)
+				{
+					OutError = FString::Printf(TEXT("blackboardInit.%s: $FixturePawn needs fixturePawn=true"), *KeyName.ToString());
+					return false;
+				}
+				Blackboard.SetValueAsObject(KeyName, FixtureActors.Pawn);
+				return true;
+			}
+			if (Text.Equals(TEXT("$FixtureController"), ESearchCase::IgnoreCase))
+			{
+				if (FixtureActors.Controller == nullptr)
+				{
+					OutError = FString::Printf(TEXT("blackboardInit.%s: no fixture controller in this session"), *KeyName.ToString());
+					return false;
+				}
+				Blackboard.SetValueAsObject(KeyName, FixtureActors.Controller);
+				return true;
+			}
 			UObject* Object = StaticLoadObject(UObject::StaticClass(), nullptr, *Text);
 			if (Object == nullptr)
 			{
@@ -1030,6 +1062,24 @@ void FBTForgeVerifyManager::StartBTVerification()
 			AbortToIdle(TEXT("UseBlackboard failed for the tree's blackboard asset"));
 			return;
 		}
+		// AAIController::InitializeBlackboard fills SelfActor from GetPawn(); when the
+		// fixture pawn is not possessed yet that is null and nothing refreshes it, so
+		// every SelfActor-based gate (DistanceCheck/UpdateDistance) failed closed in the
+		// harness while the same tree worked in game. Set it explicitly.
+		if (Blackboard != nullptr && Session.FixturePawn.IsValid()
+			&& Blackboard->GetBlackboardAsset() != nullptr
+			&& Blackboard->GetBlackboardAsset()->GetKeyID(FBlackboard::KeySelf) != FBlackboard::InvalidKey)
+		{
+			Blackboard->SetValueAsObject(FBlackboard::KeySelf, Session.FixturePawn.Get());
+			UE_LOG(LogBTForgeVerify, Warning, TEXT("SelfActor seeded: pawn=%s blackboard=%s"),
+				*GetNameSafe(Session.FixturePawn.Get()), *GetNameSafe(Blackboard));
+		}
+		else
+		{
+			UE_LOG(LogBTForgeVerify, Warning, TEXT("SelfActor NOT seeded: blackboard=%s pawnValid=%d bbAsset=%s"),
+				*GetNameSafe(Blackboard), Session.FixturePawn.IsValid() ? 1 : 0,
+				*GetNameSafe(Blackboard ? Blackboard->GetBlackboardAsset() : nullptr));
+		}
 	}
 	Session.BBComp = Blackboard;
 
@@ -1053,8 +1103,11 @@ void FBTForgeVerifyManager::StartBTVerification()
 				return;
 			}
 			const UBlackboardKeyType* KeyType = Blackboard->GetKeyType(KeyId).GetDefaultObject();
+			FBTForgeFixtureActors FixtureActors;
+			FixtureActors.Pawn = Session.FixturePawn.Get();
+			FixtureActors.Controller = Session.FixtureController.Get();
 			FString WriteError;
-			if (!WriteBlackboardValue(*Blackboard, KeyName, KeyType, Pair.Value, WriteError))
+			if (!WriteBlackboardValue(*Blackboard, KeyName, KeyType, Pair.Value, FixtureActors, WriteError))
 			{
 				AbortToIdle(WriteError);
 				return;
@@ -1508,6 +1561,7 @@ void FBTForgeVerifyManager::FinishSession(const FString& Error)
 		TEXT("{\"ok\":true,\"sessionId\":\"%s\",\"status\":\"%s\",\"kind\":\"bt\",\"pass\":%s,")
 		TEXT("\"error\":\"%s\",\"checks\":[%s],\"checksPassed\":%d,\"checksTotal\":%d,\"samples\":[%s],")
 		TEXT("\"activeTasksSeen\":[%s],\"durationSec\":%.2f,\"frameMaxSec\":%.3f,\"pawnDisplacement\":%.1f,")
+		TEXT("\"pawnStart\":[%.1f,%.1f,%.1f],\"pawnEnd\":[%.1f,%.1f,%.1f],\"pawnStartCaptured\":%s,")
 		TEXT("\"mapPath\":\"%s\",\"fixture\":{\"controller\":%s,\"pawn\":%s},")
 		TEXT("\"blackboardFinal\":{%s},\"logErrors\":%s,\"logWarnings\":%s,\"logWarningsCount\":%d,\"elapsedSec\":%.2f}"),
 		*Session.SessionId,
@@ -1521,6 +1575,11 @@ void FBTForgeVerifyManager::FinishSession(const FString& Error)
 		Elapsed,
 		Session.MaxTickDelta,
 		PawnDisplacement,
+		// Start/end are exposed so a test can pick a reachable goal (spawn + offset)
+		// instead of guessing a coordinate: the fixture pawn spawns where the map puts it.
+		Session.PawnStartLocation.X, Session.PawnStartLocation.Y, Session.PawnStartLocation.Z,
+		PawnEndLocation.X, PawnEndLocation.Y, PawnEndLocation.Z,
+		Session.bPawnStartCaptured ? TEXT("true") : TEXT("false"),
 		*JsonEscape(Session.Options.ResolvedMapPath),
 		Session.FixtureController.IsValid() ? TEXT("true") : TEXT("false"),
 		Session.FixturePawn.IsValid() ? TEXT("true") : TEXT("false"),

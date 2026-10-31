@@ -55,7 +55,8 @@ Agent 负责**规划与写规格**；确定性写入器负责**建资产**；校
 ### 规格覆盖范围
 
 - **BT 节点**：复合 `Sequence`/`Selector`；任务 `Wait`、`MoveTo`、`RunEQS`；服务 `RunEQS`；装饰器 `Blackboard`。此外接受任意非抽象 `UBTCompositeNode` / `UBTTaskNode` / `UBTService` / `UBTDecorator` **类路径**——包括项目蓝图类，如 `/Game/AI/BTS_Shoot.BTS_Shoot_C`。
-- **黑板键类型**：Bool、Int、Float、String、Name、Vector、Rotator、Object。
+- **键数据流**（`validate_behavior_tree` / `build_behavior_tree`）：反射读出每个节点的黑板键绑定并分类，报告死门（被读但无人写）、孤儿写者、写者作用域与 `FlowAbortMode` 问题；外部喂的键用 `externalKeys` 声明（树根或 BlackboardJson），项目节点用 `nodeEffects` 声明读写。
+- **黑板键类型**：Bool、Int、Float、String、Name、Vector、Rotator、Object。`SelfActor` 由 `UBlackboardData` 自动创建，规格里不要声明（声明会被拒绝）；节点仍可正常引用它。
 - **EQS generator**：`SimpleGrid`、`CurrentLocation`、`OnCircle`、`Donut`、`Cone`、`PathingGrid`、`ActorsOfClass`、`PerceivedActors`（也接受任意非抽象 `UEnvQueryGenerator` 类路径）。
 - **EQS test**：`Distance`、`Dot`、`Trace`、`Pathfinding`、`Random`、`Overlap`、`Project`、`Volume`（也接受任意非抽象 `UEnvQueryTest` 类路径）。
 - **参数写入**走 Unreal 反射：未知参数名会报错并列出合法项；枚举校验并列出全部合法值；类引用会加载并做类型校验；`FAIDataProvider*` 这类包装 struct 允许直接写数字，降低规格出错率。
